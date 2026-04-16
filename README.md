@@ -77,6 +77,62 @@ chmod 600 ~/.kaggle/kaggle.json
 
 ---
 
+## Kaggle CLI Usage
+
+1. Submit Predictions
+
+---
+
+```bash
+kaggle competitions submit \
+-c iith-deep-learning-2026-hackathon \
+-f submission.csv \
+-m "msg"
+```
+
+---
+
+2. View Submission History
+
+---
+
+```bash
+kaggle competitions submissions \
+-c iith-deep-learning-2026-hackathon
+```
+
+---
+
+3. View Leaderboard
+
+---
+
+```bash
+kaggle competitions leaderboard \
+-c iith-deep-learning-2026-hackathon
+```
+
+---
+
+## Notes
+
+* `-c` → competition slug
+* `-f` → submission file (`submission.csv`)
+* `-m` → message (used to track experiments)
+
+---
+
+## Quick Workflow
+
+```bash
+./run.sh
+kaggle competitions submit -c iith-deep-learning-2026-hackathon -f submission.csv -m "exp1"
+kaggle competitions submissions -c iith-deep-learning-2026-hackathon
+```
+
+
+---
+
 ## Dataset Setup
 
 Provide dataset path (`data_dir`) with the following structure:
