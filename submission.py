@@ -1,4 +1,4 @@
-```python id="x2f8bz"
+#!/usr/bin/env python3
 import random
 import numpy as np
 import pandas as pd
@@ -104,5 +104,4 @@ def generate_predictions(data_dir):
 if __name__ == "__main__":
     data_dir = input().strip()
     generate_predictions(data_dir)
-```
 
