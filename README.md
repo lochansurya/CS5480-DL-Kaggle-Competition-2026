@@ -62,6 +62,11 @@ pip install -r requirements.txt
 
 ## Kaggle CLI Setup (Required for Submission)
 
+You need to open the kaggle website and then:
+
+- `Account->Settings->API->create legacy api`
+
+
 ```bash
 pip install kaggle
 
