@@ -1,0 +1,20 @@
+#!/bin/bash
+
+max_size=50000000  # 50 MB
+
+echo "Checking for large files..."
+
+for file in $(git diff --cached --name-only); do
+    if [ -f "$file" ]; then
+        size=$(stat -c%s "$file" 2>/dev/null)
+        
+        if [ ! -z "$size" ] && [ $size -gt $max_size ]; then
+            echo "❌ Error: $file is larger than 50MB ($(($size / 1000000)) MB)"
+            echo "Commit aborted."
+            exit 1
+        fi
+    fi
+done
+
+echo "✅ No large files detected."
+exit 0

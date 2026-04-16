@@ -1,3 +1,35 @@
+# =========================
+# DATA (CRITICAL)
+# =========================
+data/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# =========================
+# MODEL FILES (CRITICAL)
+# =========================
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.onnx
+
+# =========================
+# OUTPUTS
+# =========================
+outputs/
+submission.csv
+
+# =========================
+# TEMP / CACHE
+# =========================
+*.npy
+*.npz
+*.pickle
+*.pkl
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
