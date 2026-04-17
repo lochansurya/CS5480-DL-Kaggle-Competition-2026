@@ -8,7 +8,35 @@ set -euo pipefail
 trap 'echo "❌ Error at line $LINENO"; exit 1' ERR
 
 ENV_NAME="cs5480-dl-kaggle"
-DATA_DIR=${1:-"data"}
+
+# -------------------------
+# 0. Flags
+# -------------------------
+SHOW_QUOTA="false"
+
+if [[ "${1:-}" == "--help" ]]; then
+    echo "Usage:"
+    echo "  ./run.sh [data_dir] [auto_submit]"
+    echo ""
+    echo "Options:"
+    echo "  --help        Show this help message"
+    echo "  --quota       Show remaining Kaggle submissions today"
+    echo ""
+    echo "Examples:"
+    echo "  ./run.sh"
+    echo "  ./run.sh data"
+    echo "  ./run.sh data true"
+    echo "  ./run.sh --quota"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--quota" ]]; then
+    SHOW_QUOTA="true"
+    DATA_DIR="data"
+else
+    DATA_DIR=${1:-"data"}
+fi
+
 AUTO_SUBMIT=${2:-"false"}
 
 echo "========== START =========="
@@ -33,18 +61,23 @@ echo "[2] Checking Python..."
 
 python - <<EOF
 import sys
-assert sys.version_info[:2] == (3,10), f"Python must be 3.10, got {sys.version}"
+assert sys.version_info[:2] == (3,11), f"Python must be 3.11, got {sys.version}"
 EOF
 
 echo "✅ Python version OK"
 
 # -------------------------
-# 3. Install Dependencies
+# 3. Install Dependencies (only if missing)
 # -------------------------
-echo "[3] Installing dependencies..."
-pip install -r requirements.txt
+echo "[3] Checking dependencies..."
 
-echo "✅ Dependencies installed"
+if [[ ! -f ".deps_installed" ]]; then
+    pip install -r requirements.txt
+    touch .deps_installed
+    echo "✅ Dependencies installed"
+else
+    echo "✅ Dependencies already installed (skipped)"
+fi
 
 # -------------------------
 # 4. Dataset Validation
@@ -112,6 +145,31 @@ fi
 chmod 600 "$KAGGLE_CONFIG"
 
 echo "✅ Kaggle setup OK"
+
+# -------------------------
+# X. Submission Quota
+# -------------------------
+if [[ "$SHOW_QUOTA" == "true" ]]; then
+    echo "[Quota] Checking submissions today..."
+
+    TODAY=$(date +%Y-%m-%d)
+
+    COUNT=$(kaggle competitions submissions \
+        -c iith-deep-learning-2026-hackathon \
+        | grep "$TODAY" | wc -l || true)
+
+    LIMIT=5
+    LEFT=$((LIMIT - COUNT))
+
+    if [[ "$LEFT" -lt 0 ]]; then
+        LEFT=0
+    fi
+
+    echo "Submissions today: $COUNT / $LIMIT"
+    echo "Remaining: $LEFT"
+
+    exit 0
+fi
 
 # -------------------------
 # 7. Run Pipeline

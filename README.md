@@ -52,7 +52,7 @@ The pipeline:
 ## Environment Setup
 
 ```bash
-conda create -n cs5480-dl-kaggle python=3.10
+conda create -n cs5480-dl-kaggle python=3.11
 conda activate cs5480-dl-kaggle
 
 pip install -r requirements.txt
@@ -289,10 +289,24 @@ if __name__ == "__main__":
 
 ## Notes
 
-* Dataset is not tracked in git
-* Large files are ignored via `.gitignore`
-* Pre-commit hooks prevent accidental commits
-* `submission.py` must run independently
+- Dataset is not tracked in git
 
+- Large files are ignored via `.gitignore`
+
+- Pre-commit hooks prevent accidental commits
+
+- `submission.py` must run independently
+
+- Python **3.11 is required** (PyTorch / torchvision are not supported on Python 3.14 via conda)
+
+- PyTorch is installed via **pip (not conda)** to support newer GPUs (e.g., RTX 50-series)
+
+- Do NOT mix conda-installed `pytorch` with pip-installed `torch`
+
+- CUDA is handled automatically by PyTorch wheels (no manual CUDA install needed)
+
+- Verify GPU setup:
+  ```bash
+  python -c "import torch; print(torch.cuda.is_available())"
 ---
 

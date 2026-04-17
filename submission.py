@@ -23,13 +23,31 @@ def set_seed(seed=42):
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(
+
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
+
+        self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 128 * 3, 1)
+            nn.Linear(128 * 16 * 16, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1)
         )
 
     def forward(self, x):
-        return self.net(x)
+        x = self.features(x)
+        return self.classifier(x)
 
 
 #-----------------
@@ -44,10 +62,58 @@ def load_image(path: Path):
 
 
 #-----------------
+# dataset
+#-----------------
+def load_dataset(train_dir: Path):
+    X, y = [], []
+
+    for label in ["0", "1"]:
+        class_dir = train_dir / label
+        for path in class_dir.iterdir():
+            if path.is_file():
+                X.append(load_image(path))
+                y.append(int(label))
+
+    X = torch.stack(X)
+    y = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
+
+    return X, y
+
+
+#-----------------
 # train
 #-----------------
 def train(model, train_dir: Path):
-    model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
+    X, y = load_dataset(train_dir)
+    X, y = X.to(device), y.to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.BCEWithLogitsLoss()
+
+    model.train()
+    epochs = 5
+    batch_size = 64
+
+    for epoch in range(epochs):
+        perm = torch.randperm(X.size(0))
+
+        for i in range(0, X.size(0), batch_size):
+            idx = perm[i:i+batch_size]
+            xb, yb = X[idx], y[idx]
+
+            optimizer.zero_grad()
+
+            logits = model(xb)
+            loss = criterion(logits, yb)
+
+            loss.backward()
+            optimizer.step()
+
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {loss.item():.4f}")
+
     return model
 
 
@@ -58,13 +124,14 @@ def predict(model, test_dir: Path):
     model.eval()
     results = []
 
+    device = next(model.parameters()).device
     files = sorted(test_dir.iterdir())
 
     for path in files:
         if not path.is_file():
             continue
 
-        x = load_image(path).unsqueeze(0)
+        x = load_image(path).unsqueeze(0).to(device)
 
         with torch.no_grad():
             logit = model(x)
@@ -95,7 +162,7 @@ def generate_predictions(data_dir):
     results = predict(model, test_dir)
 
     df = pd.DataFrame(results, columns=["ID", "TARGET"])
-    df.to_csv("submission.csv", index=False, line_terminator="\n", encoding="utf-8")
+    df.to_csv("submission.csv", index=False, lineterminator="\n", encoding="utf-8")
 
 
 #-----------------
