@@ -20,10 +20,10 @@ class CFG:
     seed: int = 42
 
     img_size: int = 224
-    batch_size: int = 64
+    batch_size: int = 128
     num_workers: int = 2
 
-    epochs: int = 15
+    epochs: int = 30
     lr: float = 1e-3
     weight_decay: float = 1e-4
 
@@ -207,9 +207,9 @@ def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
 
         if show_val and val_loader is not None:
             val_acc = evaluate(model=model, loader=val_loader, device=device)
-            print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | Train: {correct/total:.4f} | Val: {val_acc:.4f}")
+            print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | Train Accuracy: {correct/total:.4f} | Val Accuracy: {val_acc:.4f}")
         else:
-            print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f}")
+            print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | Train Accuracy: {correct/total:.4f}")
 
 
 #-----------------
