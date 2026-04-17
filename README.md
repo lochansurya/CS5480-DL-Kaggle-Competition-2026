@@ -308,5 +308,6 @@ if __name__ == "__main__":
 - Verify GPU setup:
   ```bash
   python -c "import torch; print(torch.cuda.is_available())"
+  ```
 ---
 
