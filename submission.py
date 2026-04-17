@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from pathlib import Path
+from torch.utils.data import Dataset, DataLoader, random_split
 
 
 #-----------------
@@ -36,11 +37,13 @@ class Model(nn.Module):
             nn.Conv2d(64, 128, 3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
+
+            nn.AdaptiveAvgPool2d((1, 1))  # robust to input size
         )
 
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 16 * 16, 256),
+            nn.Linear(128, 256),
             nn.ReLU(),
             nn.Linear(256, 1)
         )
@@ -51,11 +54,11 @@ class Model(nn.Module):
 
 
 #-----------------
-# data
+# image loader
 #-----------------
 def load_image(path: Path):
     img = Image.open(path).convert("RGB")
-    img = img.resize((128, 128))
+    img = img.resize((224, 224))  # updated size
     img = np.array(img).astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))
     return torch.tensor(img, dtype=torch.float32)
@@ -64,55 +67,117 @@ def load_image(path: Path):
 #-----------------
 # dataset
 #-----------------
-def load_dataset(train_dir: Path):
-    X, y = [], []
+class ImageDataset(Dataset):
+    def __init__(self, root_dir):
+        self.samples = []
 
-    for label in ["0", "1"]:
-        class_dir = train_dir / label
-        for path in class_dir.iterdir():
-            if path.is_file():
-                X.append(load_image(path))
-                y.append(int(label))
+        for label in ["0", "1"]:
+            class_dir = Path(root_dir) / label
+            for path in class_dir.iterdir():
+                if path.is_file():
+                    self.samples.append((path, int(label)))
 
-    X = torch.stack(X)
-    y = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
+    def __len__(self):
+        return len(self.samples)
 
-    return X, y
+    def __getitem__(self, idx):
+        path, label = self.samples[idx]
+        x = load_image(path)
+        y = torch.tensor([label], dtype=torch.float32)
+        return x, y
 
 
 #-----------------
-# train
+# evaluate
 #-----------------
-def train(model, train_dir: Path):
+def evaluate(model, loader, device):
+    model.eval()
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            logits = model(xb)
+            preds = (torch.sigmoid(logits) > 0.5).float()
+
+            correct += (preds == yb).sum().item()
+            total += yb.numel()
+
+    return correct / total
+
+
+#-----------------
+# train with validation
+#-----------------
+def train_with_validation(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
-    X, y = load_dataset(train_dir)
-    X, y = X.to(device), y.to(device)
+    dataset = ImageDataset(train_dir)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.BCEWithLogitsLoss()
 
-    model.train()
-    epochs = 5
-    batch_size = 64
-
     for epoch in range(epochs):
-        perm = torch.randperm(X.size(0))
+        model.train()
+        total_loss = 0.0
 
-        for i in range(0, X.size(0), batch_size):
-            idx = perm[i:i+batch_size]
-            xb, yb = X[idx], y[idx]
+        for xb, yb in train_loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
 
             optimizer.zero_grad()
-
             logits = model(xb)
             loss = criterion(logits, yb)
 
             loss.backward()
             optimizer.step()
 
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {loss.item():.4f}")
+            total_loss += loss.item()
+
+        val_acc = evaluate(model, val_loader, device)
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss:.4f} - Val Acc: {val_acc:.4f}")
+
+    return model
+
+
+#-----------------
+# train full dataset
+#-----------------
+def train_full(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
+    dataset = ImageDataset(train_dir)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.BCEWithLogitsLoss()
+
+    model.train()
+
+    for epoch in range(epochs):
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+
+            loss.backward()
+            optimizer.step()
 
     return model
 
@@ -120,12 +185,12 @@ def train(model, train_dir: Path):
 #-----------------
 # predict
 #-----------------
-def predict(model, test_dir: Path):
+def predict(model, test_dir):
     model.eval()
-    results = []
-
     device = next(model.parameters()).device
-    files = sorted(test_dir.iterdir())
+
+    results = []
+    files = sorted(Path(test_dir).iterdir())
 
     for path in files:
         if not path.is_file():
@@ -156,9 +221,17 @@ def generate_predictions(data_dir):
     assert train_dir.exists(), "Missing train directory"
     assert test_dir.exists(), "Missing test directory"
 
+    # Phase 1: validation training
+    print("=== Training with validation ===")
     model = Model()
-    model = train(model, train_dir)
+    model = train_with_validation(model, train_dir)
 
+    # Phase 2: retrain on full data
+    print("=== Retraining on full dataset ===")
+    model = Model()
+    model = train_full(model, train_dir)
+
+    # Predict
     results = predict(model, test_dir)
 
     df = pd.DataFrame(results, columns=["ID", "TARGET"])
@@ -171,4 +244,3 @@ def generate_predictions(data_dir):
 if __name__ == "__main__":
     data_dir = input().strip()
     generate_predictions(data_dir)
-
