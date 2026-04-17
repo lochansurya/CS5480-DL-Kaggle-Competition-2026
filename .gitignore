@@ -20,7 +20,7 @@ data/
 # OUTPUTS
 # =========================
 outputs/
-submission.csv
+#submission.csv
 
 # =========================
 # TEMP / CACHE
