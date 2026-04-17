@@ -23,7 +23,7 @@ class CFG:
     batch_size: int = 256
     num_workers: int = 2
 
-    epochs: int = 50
+    epochs: int = 100
     lr: float = 1e-3
     weight_decay: float = 1e-4
 
@@ -171,11 +171,11 @@ def evaluate(*, model, loader, device):
 #-----------------
 def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=cfg.lr,
-        epochs=cfg.epochs, steps_per_epoch=len(loader),
-        pct_start=0.1, div_factor=25, final_div_factor=1e4,
-    )
+   scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cfg.epochs,
+        eta_min=1e-6
+    ) 
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
     label = 1 - cfg.label_smoothing
 
