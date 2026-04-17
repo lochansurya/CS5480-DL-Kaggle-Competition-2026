@@ -120,7 +120,7 @@ if [[ ! -f "submission.py" ]]; then
     exit 1
 fi
 
-grep -q "def generate_predictions(data_dir)" submission.py \
+grep -q "def generate_predictions(data_dir: str)" submission.py \
     || { echo "❌ Missing required function"; exit 1; }
 
 echo "✅ submission.py valid"
