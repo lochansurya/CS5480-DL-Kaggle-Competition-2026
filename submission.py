@@ -6,13 +6,38 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from pathlib import Path
+from dataclasses import dataclass
 from torch.utils.data import Dataset, DataLoader, random_split
+
+
+#-----------------
+# config
+#-----------------
+@dataclass
+class CFG:
+    seed: int = 42
+
+    img_size: int = 224
+    batch_size: int = 32
+    num_workers: int = 2
+
+    epochs: int = 15
+    lr: float = 3e-4
+    weight_decay: float = 1e-4
+
+    scheduler: str = "cosine"
+    min_lr: float = 1e-6
+
+    dropout: float = 0.3
+    hidden_dim: int = 256
+
+    val_split: float = 0.2
 
 
 #-----------------
 # seed
 #-----------------
-def set_seed(seed=42):
+def set_seed(*, seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -22,30 +47,34 @@ def set_seed(seed=42):
 # model
 #-----------------
 class Model(nn.Module):
-    def __init__(self):
+    def __init__(self, *, cfg: CFG):
         super().__init__()
 
         self.features = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
             nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
             nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
-            nn.AdaptiveAvgPool2d((1, 1))  # robust to input size
+            nn.AdaptiveAvgPool2d((1, 1))
         )
 
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128, 256),
+            nn.Linear(128, cfg.hidden_dim),
             nn.ReLU(),
-            nn.Linear(256, 1)
+            nn.Dropout(cfg.dropout),
+            nn.Linear(cfg.hidden_dim, 1)
         )
 
     def forward(self, x):
@@ -56,10 +85,16 @@ class Model(nn.Module):
 #-----------------
 # image loader
 #-----------------
-def load_image(path: Path):
+def load_image(*, path: Path, cfg: CFG):
     img = Image.open(path).convert("RGB")
-    img = img.resize((224, 224))  # updated size
+    img = img.resize((cfg.img_size, cfg.img_size))
+
     img = np.array(img).astype(np.float32) / 255.0
+
+    mean = np.array([0.485, 0.456, 0.406])
+    std  = np.array([0.229, 0.224, 0.225])
+    img = (img - mean) / std
+
     img = np.transpose(img, (2, 0, 1))
     return torch.tensor(img, dtype=torch.float32)
 
@@ -68,8 +103,9 @@ def load_image(path: Path):
 # dataset
 #-----------------
 class ImageDataset(Dataset):
-    def __init__(self, root_dir):
+    def __init__(self, *, root_dir: Path, cfg: CFG):
         self.samples = []
+        self.cfg = cfg
 
         for label in ["0", "1"]:
             class_dir = Path(root_dir) / label
@@ -82,7 +118,7 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         path, label = self.samples[idx]
-        x = load_image(path)
+        x = load_image(path=path, cfg=self.cfg)
         y = torch.tensor([label], dtype=torch.float32)
         return x, y
 
@@ -90,7 +126,7 @@ class ImageDataset(Dataset):
 #-----------------
 # evaluate
 #-----------------
-def evaluate(model, loader, device):
+def evaluate(*, model, loader, device):
     model.eval()
     correct = 0
     total = 0
@@ -112,26 +148,41 @@ def evaluate(model, loader, device):
 #-----------------
 # train with validation
 #-----------------
-def train_with_validation(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
+def train_with_validation(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
-    dataset = ImageDataset(train_dir)
+    dataset = ImageDataset(root_dir=train_dir, cfg=cfg)
 
-    train_size = int(0.8 * len(dataset))
+    train_size = int((1 - cfg.val_split) * len(dataset))
     val_size = len(dataset) - train_size
 
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay
+    )
+
+    scheduler = None
+    if cfg.scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cfg.epochs,
+            eta_min=cfg.min_lr
+        )
+
     criterion = nn.BCEWithLogitsLoss()
 
-    for epoch in range(epochs):
+    for epoch in range(cfg.epochs):
         model.train()
         total_loss = 0.0
+        train_correct = 0
+        train_total = 0
 
         for xb, yb in train_loader:
             xb = xb.to(device)
@@ -146,8 +197,18 @@ def train_with_validation(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
 
             total_loss += loss.item()
 
-        val_acc = evaluate(model, val_loader, device)
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss:.4f} - Val Acc: {val_acc:.4f}")
+            preds = (torch.sigmoid(logits) > 0.5).float()
+            train_correct += (preds == yb).sum().item()
+            train_total += yb.numel()
+
+        if scheduler:
+            scheduler.step()
+
+        val_acc = evaluate(model=model, loader=val_loader, device=device)
+        train_acc = train_correct / train_total
+        avg_loss = total_loss / len(train_loader)
+
+        print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f}")
 
     return model
 
@@ -155,19 +216,26 @@ def train_with_validation(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
 #-----------------
 # train full dataset
 #-----------------
-def train_full(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
+def train_full(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
-    dataset = ImageDataset(train_dir)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataset = ImageDataset(root_dir=train_dir, cfg=cfg)
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay
+    )
+
     criterion = nn.BCEWithLogitsLoss()
 
     model.train()
 
-    for epoch in range(epochs):
+    for epoch in range(cfg.epochs):
+        total_loss = 0.0
+
         for xb, yb in loader:
             xb = xb.to(device)
             yb = yb.to(device)
@@ -179,13 +247,18 @@ def train_full(model, train_dir, epochs=10, batch_size=32, lr=1e-3):
             loss.backward()
             optimizer.step()
 
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(loader)
+        print(f"[Full Train] Epoch {epoch+1}/{cfg.epochs} | Loss: {avg_loss:.4f}")
+
     return model
 
 
 #-----------------
-# predict
+# predict (internal strict API)
 #-----------------
-def predict(model, test_dir):
+def predict(*, model, test_dir: Path, cfg: CFG):
     model.eval()
     device = next(model.parameters()).device
 
@@ -196,7 +269,7 @@ def predict(model, test_dir):
         if not path.is_file():
             continue
 
-        x = load_image(path).unsqueeze(0).to(device)
+        x = load_image(path=path, cfg=cfg).unsqueeze(0).to(device)
 
         with torch.no_grad():
             logit = model(x)
@@ -209,10 +282,11 @@ def predict(model, test_dir):
 
 
 #-----------------
-# main
+# pipeline (Kaggle API - REQUIRED SIGNATURE)
 #-----------------
-def generate_predictions(data_dir):
-    set_seed(42)
+def generate_predictions(data_dir: str):
+    cfg = CFG()
+    set_seed(seed=cfg.seed)
 
     data_dir = Path(data_dir)
     train_dir = data_dir / "train"
@@ -221,18 +295,16 @@ def generate_predictions(data_dir):
     assert train_dir.exists(), "Missing train directory"
     assert test_dir.exists(), "Missing test directory"
 
-    # Phase 1: validation training
     print("=== Training with validation ===")
-    model = Model()
-    model = train_with_validation(model, train_dir)
+    model = Model(cfg=cfg)
+    model = train_with_validation(model=model, train_dir=train_dir, cfg=cfg)
 
-    # Phase 2: retrain on full data
     print("=== Retraining on full dataset ===")
-    model = Model()
-    model = train_full(model, train_dir)
+    model = Model(cfg=cfg)
+    model = train_full(model=model, train_dir=train_dir, cfg=cfg)
 
-    # Predict
-    results = predict(model, test_dir)
+    print("=== Predicting ===")
+    results = predict(model=model, test_dir=test_dir, cfg=cfg)
 
     df = pd.DataFrame(results, columns=["ID", "TARGET"])
     df.to_csv("submission.csv", index=False, lineterminator="\n", encoding="utf-8")
