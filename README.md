@@ -109,6 +109,7 @@ kaggle competitions submissions \
 
 ```bash
 kaggle competitions leaderboard \
+--show \
 -c iith-deep-learning-2026-hackathon
 ```
 
