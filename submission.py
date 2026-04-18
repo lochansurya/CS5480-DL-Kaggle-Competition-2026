@@ -29,9 +29,9 @@ class CFG:
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
 
-    dropout: float = 0.4
+    dropout: float = 0.3
     val_split: float = 0.15
-    label_smoothing: float = 0.1
+    label_smoothing: float = 0.05
     grad_clip: float = 1.0
     tta: bool = True
 
@@ -55,16 +55,15 @@ def get_transforms(cfg: CFG, train: bool):
 
     if train:
         return T.Compose([
-            T.RandomResizedCrop(cfg.img_size, scale=(0.6, 1.0)),
+            # conservative crop: keep most of scene so we don't cut out cubes
+            T.RandomResizedCrop(cfg.img_size, scale=(0.85, 1.0)),
             T.RandomHorizontalFlip(),
-            T.RandomVerticalFlip(p=0.3),
-            T.RandomRotation(15),
-            T.ColorJitter(0.4, 0.4, 0.4, 0.1),
-            T.RandomGrayscale(p=0.05),
-            T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
+            # no vertical flip — vertical arrangement carries semantic meaning
+            # no rotation — spatial arrangement matters
+            T.ColorJitter(0.3, 0.3, 0.3, 0.1),
             T.ToTensor(),
             T.Normalize(mean, std),
-            T.RandomErasing(p=0.25, scale=(0.02, 0.2)),
+            # no RandomErasing — it erases the small cubes
         ])
     else:
         return T.Compose([
@@ -75,24 +74,48 @@ def get_transforms(cfg: CFG, train: bool):
 
 
 #-----------------
-# SE block
+# CBAM: channel + spatial attention
 #-----------------
-class SEBlock(nn.Module):
+class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=16):
         super().__init__()
         mid = max(channels // reduction, 4)
-        self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(channels, mid, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(mid, channels, bias=False),
-            nn.Sigmoid(),
         )
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
 
     def forward(self, x):
         b, c, _, _ = x.shape
-        w = self.pool(x).view(b, c)
-        return x * self.fc(w).view(b, c, 1, 1)
+        a = self.fc(self.avg_pool(x).view(b, c))
+        m = self.fc(self.max_pool(x).view(b, c))
+        w = torch.sigmoid(a + m).view(b, c, 1, 1)
+        return x * w
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+
+    def forward(self, x):
+        avg = x.mean(dim=1, keepdim=True)
+        mx  = x.max(dim=1, keepdim=True)[0]
+        w = torch.sigmoid(self.conv(torch.cat([avg, mx], dim=1)))
+        return x * w
+
+
+class CBAM(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.ca = ChannelAttention(channels)
+        self.sa = SpatialAttention()
+
+    def forward(self, x):
+        return self.sa(self.ca(x))
 
 
 #-----------------
@@ -106,7 +129,7 @@ class BasicBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_c, out_c, 3, padding=1, bias=False)
         self.bn2   = nn.BatchNorm2d(out_c)
         self.relu  = nn.ReLU(inplace=True)
-        self.se    = SEBlock(out_c)
+        self.cbam  = CBAM(out_c)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_c != out_c:
@@ -118,7 +141,7 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         out = self.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-        out = self.se(out)
+        out = self.cbam(out)
         return self.relu(out + self.shortcut(x))
 
 
@@ -142,10 +165,14 @@ class Model(nn.Module):
         self.layer2 = _make_layer(64,  128, 2, stride=2)
         self.layer3 = _make_layer(128, 256, 2, stride=2)
         self.layer4 = _make_layer(256, 512, 2, stride=2)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        # 2x2 pooling preserves spatial quadrant info (top-left, top-right, etc.)
+        self.pool = nn.AdaptiveAvgPool2d((2, 2))
         self.classifier = nn.Sequential(
-            nn.Flatten(),
+            nn.Flatten(),          # 512 * 4 = 2048
             nn.Dropout(cfg.dropout),
+            nn.Linear(2048, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(cfg.dropout / 2),
             nn.Linear(512, 1),
         )
 
@@ -314,7 +341,7 @@ def train_with_validation(*, model, train_dir: Path, cfg: CFG):
 #-----------------
 # train full dataset
 #-----------------
-def train_full(*, model, train_dir: Path, cfg: CFG, threshold: float):
+def train_full(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
@@ -328,7 +355,7 @@ def train_full(*, model, train_dir: Path, cfg: CFG, threshold: float):
 
 
 #-----------------
-# predict (4-view TTA)
+# predict (4-view TTA, flips only)
 #-----------------
 def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
     model.eval()
@@ -337,12 +364,10 @@ def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
     std  = [0.229, 0.224, 0.225]
     normalize = T.Compose([T.ToTensor(), T.Normalize(mean, std)])
 
-    def prep(img, hflip=False, vflip=False):
+    def prep(img, hflip=False):
         img = img.resize((cfg.img_size, cfg.img_size), Image.BILINEAR)
         if hflip:
             img = TF.hflip(img)
-        if vflip:
-            img = TF.vflip(img)
         return normalize(img).unsqueeze(0).to(device)
 
     results = []
@@ -354,12 +379,7 @@ def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
 
         with torch.no_grad():
             if cfg.tta:
-                views = [
-                    prep(img),
-                    prep(img, hflip=True),
-                    prep(img, vflip=True),
-                    prep(img, hflip=True, vflip=True),
-                ]
+                views = [prep(img), prep(img, hflip=True)]
                 prob = sum(torch.sigmoid(model(v)).item() for v in views) / len(views)
             else:
                 prob = torch.sigmoid(model(prep(img))).item()
@@ -392,7 +412,7 @@ def generate_predictions(data_dir: str):
 
     print("=== Retraining on full dataset ===")
     model = Model(cfg=cfg)
-    model = train_full(model=model, train_dir=train_dir, cfg=cfg, threshold=threshold)
+    model = train_full(model=model, train_dir=train_dir, cfg=cfg)
 
     print("=== Predicting ===")
     results = predict(model=model, test_dir=test_dir, cfg=cfg, threshold=threshold)
