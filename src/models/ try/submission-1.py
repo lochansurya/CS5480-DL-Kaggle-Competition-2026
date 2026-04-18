@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import math
 import random
 import numpy as np
 import pandas as pd
@@ -21,15 +20,14 @@ class CFG:
     seed: int = 42
 
     img_size: int = 224
-    batch_size: int = 256
-    num_workers: int = 4
+    batch_size: int = 128   # reduced
+    num_workers: int = 2
 
-    epochs: int = 60
+    epochs: int = 100
     lr: float = 1e-3
-    weight_decay: float = 1e-4
-    warmup_epochs: int = 5
+    weight_decay: float = 5e-4   # increased
 
-    dropout: float = 0.4
+    dropout: float = 0.4   # increased
     val_split: float = 0.15
     label_smoothing: float = 0.1
     grad_clip: float = 1.0
@@ -55,16 +53,15 @@ def get_transforms(cfg: CFG, train: bool):
 
     if train:
         return T.Compose([
-            T.RandomResizedCrop(cfg.img_size, scale=(0.6, 1.0)),
+            T.RandomResizedCrop(cfg.img_size, scale=(0.7, 1.0)),
             T.RandomHorizontalFlip(),
             T.RandomVerticalFlip(p=0.3),
-            T.RandomRotation(15),
-            T.ColorJitter(0.4, 0.4, 0.4, 0.1),
+            T.RandomRotation(20),
+            T.ColorJitter(0.3, 0.3, 0.3, 0.1),
             T.RandomGrayscale(p=0.05),
-            T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
             T.ToTensor(),
             T.Normalize(mean, std),
-            T.RandomErasing(p=0.25, scale=(0.02, 0.2)),
+            T.RandomErasing(p=0.3, scale=(0.02, 0.2)),
         ])
     else:
         return T.Compose([
@@ -72,27 +69,6 @@ def get_transforms(cfg: CFG, train: bool):
             T.ToTensor(),
             T.Normalize(mean, std),
         ])
-
-
-#-----------------
-# SE block
-#-----------------
-class SEBlock(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-        mid = max(channels // reduction, 4)
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channels, mid, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(mid, channels, bias=False),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.shape
-        w = self.pool(x).view(b, c)
-        return x * self.fc(w).view(b, c, 1, 1)
 
 
 #-----------------
@@ -106,7 +82,7 @@ class BasicBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_c, out_c, 3, padding=1, bias=False)
         self.bn2   = nn.BatchNorm2d(out_c)
         self.relu  = nn.ReLU(inplace=True)
-        self.se    = SEBlock(out_c)
+        self.dropout = nn.Dropout2d(p=0.1)   # added
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_c != out_c:
@@ -117,16 +93,9 @@ class BasicBlock(nn.Module):
 
     def forward(self, x):
         out = self.relu(self.bn1(self.conv1(x)))
+        out = self.dropout(out)   # added
         out = self.bn2(self.conv2(out))
-        out = self.se(out)
         return self.relu(out + self.shortcut(x))
-
-
-def _make_layer(in_c, out_c, num_blocks, stride):
-    layers = [BasicBlock(in_c, out_c, stride=stride)]
-    for _ in range(1, num_blocks):
-        layers.append(BasicBlock(out_c, out_c))
-    return nn.Sequential(*layers)
 
 
 class Model(nn.Module):
@@ -138,10 +107,10 @@ class Model(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(3, stride=2, padding=1),
         )
-        self.layer1 = _make_layer(64,  64,  2, stride=1)
-        self.layer2 = _make_layer(64,  128, 2, stride=2)
-        self.layer3 = _make_layer(128, 256, 2, stride=2)
-        self.layer4 = _make_layer(256, 512, 2, stride=2)
+        self.layer1 = nn.Sequential(BasicBlock(64, 64),  BasicBlock(64, 64))
+        self.layer2 = nn.Sequential(BasicBlock(64, 128, stride=2),  BasicBlock(128, 128))
+        self.layer3 = nn.Sequential(BasicBlock(128, 256, stride=2), BasicBlock(256, 256))
+        self.layer4 = nn.Sequential(BasicBlock(256, 512, stride=2), BasicBlock(512, 512))
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Sequential(
             nn.Flatten(),
@@ -185,19 +154,7 @@ class ImageDataset(Dataset):
 
 
 #-----------------
-# scheduler (warmup + cosine)
-#-----------------
-def get_scheduler(optimizer, cfg):
-    def lr_lambda(epoch):
-        if epoch < cfg.warmup_epochs:
-            return (epoch + 1) / cfg.warmup_epochs
-        progress = (epoch - cfg.warmup_epochs) / max(cfg.epochs - cfg.warmup_epochs, 1)
-        return max(0.001, 0.5 * (1 + math.cos(math.pi * progress)))
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-
-#-----------------
-# evaluate + threshold search
+# evaluate
 #-----------------
 def evaluate(*, model, loader, device):
     model.eval()
@@ -212,39 +169,20 @@ def evaluate(*, model, loader, device):
     return correct / total
 
 
-def find_best_threshold(*, model, loader, device):
-    model.eval()
-    all_probs, all_labels = [], []
-    with torch.no_grad():
-        for xb, yb in loader:
-            xb = xb.to(device)
-            p = torch.sigmoid(model(xb)).cpu().numpy().flatten()
-            all_probs.extend(p)
-            all_labels.extend(yb.numpy().flatten())
-
-    probs  = np.array(all_probs)
-    labels = np.array(all_labels)
-
-    best_t, best_acc = 0.5, 0.0
-    for t in np.linspace(0.05, 0.95, 181):
-        acc = ((probs > t).astype(float) == labels).mean()
-        if acc > best_acc:
-            best_acc = acc
-            best_t = float(t)
-
-    print(f"Best threshold: {best_t:.3f}  Val acc: {best_acc:.4f}  "
-          f"Pred-1 ratio: {(probs > best_t).mean():.3f}")
-    return best_t
-
-
-#-----------------
-# train loop
-#-----------------
+#-------------------
+# train loop(shared)
+#-------------------
 def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scheduler = get_scheduler(optimizer, cfg)
-    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
-    smooth = cfg.label_smoothing
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cfg.epochs,
+        eta_min=1e-6
+    )
+
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
+    label = 1 - cfg.label_smoothing
 
     for epoch in range(cfg.epochs):
         model.train()
@@ -254,12 +192,12 @@ def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
 
         for xb, yb in loader:
             xb, yb = xb.to(device), yb.to(device)
-            yb_s = yb * (1 - smooth) + (1 - yb) * (smooth / 2)
+            yb_smooth = yb * label + (1 - yb) * (cfg.label_smoothing / 2)
 
             optimizer.zero_grad()
-            with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+            with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
                 logits = model(xb)
-                loss = nn.functional.binary_cross_entropy_with_logits(logits, yb_s)
+                loss = nn.functional.binary_cross_entropy_with_logits(logits, yb_smooth)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -271,20 +209,18 @@ def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
             correct += ((torch.sigmoid(logits) > 0.5).float() == yb).sum().item()
             total += yb.numel()
 
-        scheduler.step()
+        scheduler.step()   # moved here
 
         if show_val and val_loader is not None:
             val_acc = evaluate(model=model, loader=val_loader, device=device)
-            print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | "
-                  f"Train Acc: {correct/total:.4f} | Val Acc: {val_acc:.4f}")
+            print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | Train Accuracy: {correct/total:.4f} | Val Accuracy: {val_acc:.4f}")
         else:
-            print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | "
-                  f"Train Acc: {correct/total:.4f}")
+            print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | Train Accuracy: {correct/total:.4f}")
 
 
-#-----------------
+#----------------------
 # train with validation
-#-----------------
+#----------------------
 def train_with_validation(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -298,43 +234,39 @@ def train_with_validation(*, model, train_dir: Path, cfg: CFG):
     train_idx, val_idx = indices[:split], indices[split:]
 
     train_loader = DataLoader(Subset(train_ds, train_idx), batch_size=cfg.batch_size,
-                              shuffle=True, num_workers=cfg.num_workers, pin_memory=True,
-                              persistent_workers=cfg.num_workers > 0)
+                              shuffle=True, num_workers=cfg.num_workers, pin_memory=True)
     val_loader   = DataLoader(Subset(val_ds, val_idx), batch_size=cfg.batch_size,
-                              shuffle=False, num_workers=cfg.num_workers, pin_memory=True,
-                              persistent_workers=cfg.num_workers > 0)
+                              shuffle=False, num_workers=cfg.num_workers, pin_memory=True)
 
     _run_epochs(model=model, loader=train_loader, cfg=cfg, device=device,
                 show_val=True, val_loader=val_loader)
+    return model
 
-    threshold = find_best_threshold(model=model, loader=val_loader, device=device)
-    return model, threshold
-
-
-#-----------------
+#---------------------------
 # train full dataset
-#-----------------
-def train_full(*, model, train_dir: Path, cfg: CFG, threshold: float):
+#---------------------------
+
+def train_full(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
     dataset = ImageDataset(root_dir=train_dir, cfg=cfg, train=True)
     loader  = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True,
-                         num_workers=cfg.num_workers, pin_memory=True,
-                         persistent_workers=cfg.num_workers > 0)
+                         num_workers=cfg.num_workers, pin_memory=True)
 
     _run_epochs(model=model, loader=loader, cfg=cfg, device=device)
     return model
 
 
-#-----------------
-# predict (4-view TTA)
-#-----------------
-def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
+#------------------
+# predict(with TTA)
+#------------------
+def predict(*, model, test_dir: Path, cfg: CFG):
     model.eval()
     device = next(model.parameters()).device
     mean = [0.485, 0.456, 0.406]
     std  = [0.229, 0.224, 0.225]
+
     normalize = T.Compose([T.ToTensor(), T.Normalize(mean, std)])
 
     def prep(img, hflip=False, vflip=False):
@@ -364,45 +296,31 @@ def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
             else:
                 prob = torch.sigmoid(model(prep(img))).item()
 
-        results.append((path.name, int(prob > threshold)))
+        results.append((path.name, int(prob > 0.5)))
 
-    pred1 = sum(r[1] for r in results)
-    print(f"Predictions: {pred1} class-1 ({pred1/len(results):.3f}), "
-          f"{len(results)-pred1} class-0  threshold={threshold:.3f}")
     return results
 
 
-#-----------------
+#------------------
 # pipeline
-#-----------------
+#------------------
 def generate_predictions(data_dir: str):
     cfg = CFG()
     set_seed(seed=cfg.seed)
-
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
 
     data_dir  = Path(data_dir)
     train_dir = data_dir / "train"
     test_dir  = data_dir / "test"
 
-    print("=== Training with validation ===")
     model = Model(cfg=cfg)
-    model, threshold = train_with_validation(model=model, train_dir=train_dir, cfg=cfg)
+    model = train_with_validation(model=model, train_dir=train_dir, cfg=cfg)
 
-    print("=== Retraining on full dataset ===")
     model = Model(cfg=cfg)
-    model = train_full(model=model, train_dir=train_dir, cfg=cfg, threshold=threshold)
+    model = train_full(model=model, train_dir=train_dir, cfg=cfg)
 
-    print("=== Predicting ===")
-    results = predict(model=model, test_dir=test_dir, cfg=cfg, threshold=threshold)
-
-    df = pd.DataFrame(results, columns=["ID", "TARGET"])
-    df.to_csv("submission.csv", index=False)
+    results = predict(model=model, test_dir=test_dir, cfg=cfg)
+    pd.DataFrame(results, columns=["ID", "TARGET"]).to_csv("submission.csv", index=False)
 
 
-#-----------------
-# entry
-#-----------------
 if __name__ == "__main__":
     generate_predictions(input().strip())
