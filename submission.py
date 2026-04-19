@@ -150,7 +150,7 @@ def _make_layer(in_c, out_c, num_blocks, stride):
 
 
 class ResNetEncoder(nn.Module):
-    """ResNet-34 + CBAM backbone → global avg pool → 512-d feature."""
+    """ResNet-34 + CBAM backbone, global avg pool, 512-d feature."""
     def __init__(self):
         super().__init__()
         self.stem = nn.Sequential(
@@ -182,15 +182,15 @@ class VAEDecoder(nn.Module):
         super().__init__()
         self.fc = nn.Linear(latent_dim, 512 * 7 * 7)
         self.net = nn.Sequential(
-            nn.ConvTranspose2d(512, 256, 4, stride=2, padding=1),  # 7→14
+            nn.ConvTranspose2d(512, 256, 4, stride=2, padding=1),  # 7 to 14
             nn.BatchNorm2d(256), nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),  # 14→28
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),  # 14 to 28
             nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(128,  64, 4, stride=2, padding=1),  # 28→56
+            nn.ConvTranspose2d(128,  64, 4, stride=2, padding=1),  # 28 to 56
             nn.BatchNorm2d(64),  nn.ReLU(inplace=True),
-            nn.ConvTranspose2d( 64,  32, 4, stride=2, padding=1),  # 56→112
+            nn.ConvTranspose2d( 64,  32, 4, stride=2, padding=1),  # 56 to 112
             nn.BatchNorm2d(32),  nn.ReLU(inplace=True),
-            nn.ConvTranspose2d( 32,   3, 4, stride=2, padding=1),  # 112→224
+            nn.ConvTranspose2d( 32,   3, 4, stride=2, padding=1),  # 112 to 224
             nn.Sigmoid(),
         )
 
