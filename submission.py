@@ -89,9 +89,9 @@ class ChannelAttention(nn.Module):
 
     def forward(self, x):
         b, c, _, _ = x.shape
-        a = self.fc(self.avg_pool(x).view(b, c))
-        m = self.fc(self.max_pool(x).view(b, c))
-        return x * torch.sigmoid(a + m).view(b, c, 1, 1)
+        a = self.fc(self.avg_pool(x).reshape(b, c))
+        m = self.fc(self.max_pool(x).reshape(b, c))
+        return x * torch.sigmoid(a + m).reshape(b, c, 1, 1)
 
 
 class SpatialAttention(nn.Module):
@@ -195,7 +195,7 @@ class VAEDecoder(nn.Module):
         )
 
     def forward(self, z):
-        return self.net(self.fc(z).view(-1, 512, 7, 7))
+        return self.net(self.fc(z).reshape(-1, 512, 7, 7))
 
 
 class VAE(nn.Module):
@@ -265,8 +265,8 @@ class LatentDataset(Dataset):
 # VAE training
 #-----------------
 def _vae_loss(recon, x, mu, logvar, beta):
-    mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
-    std  = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).reshape(1, 3, 1, 1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=x.device).reshape(1, 3, 1, 1)
     x_01 = (x * std + mean).clamp(0, 1)
     recon_loss = nn.functional.mse_loss(recon, x_01)
     kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
