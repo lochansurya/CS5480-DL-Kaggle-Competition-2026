@@ -21,10 +21,10 @@ class CFG:
     seed: int = 42
 
     img_size: int = 224
-    batch_size: int = 256
+    batch_size: int = 128
     num_workers: int = 4
 
-    epochs: int = 60
+    epochs: int = 80
     lr: float = 1e-3
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
@@ -34,6 +34,7 @@ class CFG:
     label_smoothing: float = 0.05
     grad_clip: float = 1.0
     tta: bool = True
+    patience: int = 10
 
 
 #-----------------
@@ -119,7 +120,7 @@ class CBAM(nn.Module):
 
 
 #-----------------
-# model
+# model: ResNet-34 style (BasicBlock, [3,4,6,3]) + CBAM
 #-----------------
 class BasicBlock(nn.Module):
     def __init__(self, in_c, out_c, stride=1):
@@ -161,11 +162,12 @@ class Model(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(3, stride=2, padding=1),
         )
-        self.layer1 = _make_layer(64,  64,  2, stride=1)
-        self.layer2 = _make_layer(64,  128, 2, stride=2)
-        self.layer3 = _make_layer(128, 256, 2, stride=2)
-        self.layer4 = _make_layer(256, 512, 2, stride=2)
-        # 2x2 pooling preserves spatial quadrant info (top-left, top-right, etc.)
+        # [3,4,6,3] blocks — ResNet-34 depth, channels [64,128,256,512]
+        self.layer1 = _make_layer(64,  64,  3, stride=1)
+        self.layer2 = _make_layer(64,  128, 4, stride=2)
+        self.layer3 = _make_layer(128, 256, 6, stride=2)
+        self.layer4 = _make_layer(256, 512, 3, stride=2)
+        # 2x2 pooling preserves spatial quadrant info
         self.pool = nn.AdaptiveAvgPool2d((2, 2))
         self.classifier = nn.Sequential(
             nn.Flatten(),          # 512 * 4 = 2048
@@ -273,6 +275,10 @@ def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     smooth = cfg.label_smoothing
 
+    best_val_acc = 0.0
+    best_state = None
+    no_improve = 0
+
     for epoch in range(cfg.epochs):
         model.train()
         total_loss = 0.0
@@ -304,9 +310,22 @@ def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
             val_acc = evaluate(model=model, loader=val_loader, device=device)
             print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | "
                   f"Train Acc: {correct/total:.4f} | Val Acc: {val_acc:.4f}")
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= cfg.patience:
+                    print(f"Early stopping at epoch {epoch+1} (best val acc: {best_val_acc:.4f})")
+                    break
         else:
             print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | "
                   f"Train Acc: {correct/total:.4f}")
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"Restored best model (val acc: {best_val_acc:.4f})")
 
 
 #-----------------
