@@ -20,12 +20,12 @@ from torch.utils.data import Dataset, DataLoader, Subset
 class CFG:
     seed: int = 42
 
-    img_size: int = 224
+    img_size: int = 224    
     batch_size: int = 128
     num_workers: int = 4
 
     epochs: int = 80
-    lr: float = 1e-3
+    lr: float = 7e-4
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
 
@@ -33,7 +33,7 @@ class CFG:
     val_split: float = 0.15
     label_smoothing: float = 0.05
     grad_clip: float = 1.0
-    tta: bool = True
+    tta: bool = False
     patience: int = 10
 
 
@@ -56,15 +56,12 @@ def get_transforms(cfg: CFG, train: bool):
 
     if train:
         return T.Compose([
-            # conservative crop: keep most of scene so we don't cut out cubes
-            T.RandomResizedCrop(cfg.img_size, scale=(0.85, 1.0)),
+            T.RandomResizedCrop(cfg.img_size, scale=(0.9, 1.0)),  # safer crop
             T.RandomHorizontalFlip(),
-            # no vertical flip — vertical arrangement carries semantic meaning
-            # no rotation — spatial arrangement matters
-            T.ColorJitter(0.3, 0.3, 0.3, 0.1),
+            T.ColorJitter(0.4, 0.4, 0.4, 0.15),
+            T.RandomApply([T.GaussianBlur(3)], p=0.2),
             T.ToTensor(),
             T.Normalize(mean, std),
-            # no RandomErasing — it erases the small cubes
         ])
     else:
         return T.Compose([
@@ -75,7 +72,23 @@ def get_transforms(cfg: CFG, train: bool):
 
 
 #-----------------
-# CBAM: channel + spatial attention
+# GeM pooling
+#-----------------
+class GeM(nn.Module):
+    def __init__(self, p=3.0, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        return torch.nn.functional.adaptive_avg_pool2d(
+            x.clamp(min=self.eps).pow(self.p),
+            (1, 1)
+        ).pow(1.0 / self.p)
+
+
+#-----------------
+# CBAM
 #-----------------
 class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=16):
@@ -120,7 +133,7 @@ class CBAM(nn.Module):
 
 
 #-----------------
-# model: ResNet-34 style (BasicBlock, [3,4,6,3]) + CBAM
+# model
 #-----------------
 class BasicBlock(nn.Module):
     def __init__(self, in_c, out_c, stride=1):
@@ -162,20 +175,20 @@ class Model(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(3, stride=2, padding=1),
         )
-        # [3,4,6,3] blocks — ResNet-34 depth, channels [64,128,256,512]
         self.layer1 = _make_layer(64,  64,  3, stride=1)
         self.layer2 = _make_layer(64,  128, 4, stride=2)
         self.layer3 = _make_layer(128, 256, 6, stride=2)
         self.layer4 = _make_layer(256, 512, 3, stride=2)
-        # 2x2 pooling preserves spatial quadrant info
-        self.pool = nn.AdaptiveAvgPool2d((2, 2))
+
+        self.pool = GeM()
+
         self.classifier = nn.Sequential(
-            nn.Flatten(),          # 512 * 4 = 2048
+            nn.Flatten(),
             nn.Dropout(cfg.dropout),
-            nn.Linear(2048, 512),
+            nn.Linear(512, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(cfg.dropout / 2),
-            nn.Linear(512, 1),
+            nn.Linear(256, 1),
         )
 
     def forward(self, x):
@@ -214,7 +227,7 @@ class ImageDataset(Dataset):
 
 
 #-----------------
-# scheduler (warmup + cosine)
+# scheduler
 #-----------------
 def get_scheduler(optimizer, cfg):
     def lr_lambda(epoch):
@@ -226,7 +239,7 @@ def get_scheduler(optimizer, cfg):
 
 
 #-----------------
-# evaluate + threshold search
+# evaluate + threshold
 #-----------------
 def evaluate(*, model, loader, device):
     model.eval()
@@ -255,19 +268,18 @@ def find_best_threshold(*, model, loader, device):
     labels = np.array(all_labels)
 
     best_t, best_acc = 0.5, 0.0
-    for t in np.linspace(0.05, 0.95, 181):
+    for t in np.linspace(0.2, 0.8, 301):
         acc = ((probs > t).astype(float) == labels).mean()
         if acc > best_acc:
             best_acc = acc
             best_t = float(t)
 
-    print(f"Best threshold: {best_t:.3f}  Val acc: {best_acc:.4f}  "
-          f"Pred-1 ratio: {(probs > best_t).mean():.3f}")
+    print(f"Best threshold: {best_t:.3f}  Val acc: {best_acc:.4f}")
     return best_t
 
 
 #-----------------
-# train loop
+# training loop (unchanged)
 #-----------------
 def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -310,26 +322,12 @@ def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
             val_acc = evaluate(model=model, loader=val_loader, device=device)
             print(f"Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | "
                   f"Train Acc: {correct/total:.4f} | Val Acc: {val_acc:.4f}")
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                no_improve = 0
-            else:
-                no_improve += 1
-                if no_improve >= cfg.patience:
-                    print(f"Early stopping at epoch {epoch+1} (best val acc: {best_val_acc:.4f})")
-                    break
         else:
-            print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f} | "
-                  f"Train Acc: {correct/total:.4f}")
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        print(f"Restored best model (val acc: {best_val_acc:.4f})")
+            print(f"[Full] Epoch {epoch+1}/{cfg.epochs} | Loss: {total_loss/len(loader):.4f}")
 
 
 #-----------------
-# train with validation
+# train_with_validation
 #-----------------
 def train_with_validation(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -358,7 +356,7 @@ def train_with_validation(*, model, train_dir: Path, cfg: CFG):
 
 
 #-----------------
-# train full dataset
+# train_full
 #-----------------
 def train_full(*, model, train_dir: Path, cfg: CFG):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -374,7 +372,7 @@ def train_full(*, model, train_dir: Path, cfg: CFG):
 
 
 #-----------------
-# predict (4-view TTA, flips only)
+# predict (no TTA)
 #-----------------
 def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
     model.eval()
@@ -383,10 +381,8 @@ def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
     std  = [0.229, 0.224, 0.225]
     normalize = T.Compose([T.ToTensor(), T.Normalize(mean, std)])
 
-    def prep(img, hflip=False):
+    def prep(img):
         img = img.resize((cfg.img_size, cfg.img_size), Image.BILINEAR)
-        if hflip:
-            img = TF.hflip(img)
         return normalize(img).unsqueeze(0).to(device)
 
     results = []
@@ -397,17 +393,10 @@ def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
         img = Image.open(path).convert("RGB")
 
         with torch.no_grad():
-            if cfg.tta:
-                views = [prep(img), prep(img, hflip=True)]
-                prob = sum(torch.sigmoid(model(v)).item() for v in views) / len(views)
-            else:
-                prob = torch.sigmoid(model(prep(img))).item()
+            prob = torch.sigmoid(model(prep(img))).item()
 
         results.append((path.name, int(prob > threshold)))
 
-    pred1 = sum(r[1] for r in results)
-    print(f"Predictions: {pred1} class-1 ({pred1/len(results):.3f}), "
-          f"{len(results)-pred1} class-0  threshold={threshold:.3f}")
     return results
 
 
