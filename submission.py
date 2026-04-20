@@ -31,10 +31,10 @@ class CFG:
 
     dropout: float = 0.3
     val_split: float = 0.15
-    label_smoothing: float = 0.05
+    label_smoothing: float = 0.0   # CHANGED
     grad_clip: float = 1.0
     tta: bool = False
-    patience: int = 10
+    patience: int = 15             # CHANGED
 
 
 #-----------------
@@ -56,7 +56,7 @@ def get_transforms(cfg: CFG, train: bool):
 
     if train:
         return T.Compose([
-            T.RandomResizedCrop(cfg.img_size, scale=(0.9, 1.0)),  # safer crop
+            T.RandomResizedCrop(cfg.img_size, scale=(0.7, 1.0)),  # CHANGED
             T.RandomHorizontalFlip(),
             T.ColorJitter(0.4, 0.4, 0.4, 0.15),
             T.RandomApply([T.GaussianBlur(3)], p=0.2),
@@ -234,7 +234,7 @@ def get_scheduler(optimizer, cfg):
         if epoch < cfg.warmup_epochs:
             return (epoch + 1) / cfg.warmup_epochs
         progress = (epoch - cfg.warmup_epochs) / max(cfg.epochs - cfg.warmup_epochs, 1)
-        return max(0.001, 0.5 * (1 + math.cos(math.pi * progress)))
+        return 0.5 * (1 + math.cos(math.pi * progress))  # CHANGED
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
@@ -268,7 +268,7 @@ def find_best_threshold(*, model, loader, device):
     labels = np.array(all_labels)
 
     best_t, best_acc = 0.5, 0.0
-    for t in np.linspace(0.2, 0.8, 301):
+    for t in np.linspace(0.05, 0.95, 401):  # CHANGED
         acc = ((probs > t).astype(float) == labels).mean()
         if acc > best_acc:
             best_acc = acc
@@ -372,7 +372,7 @@ def train_full(*, model, train_dir: Path, cfg: CFG):
 
 
 #-----------------
-# predict (no TTA)
+# predict
 #-----------------
 def predict(*, model, test_dir: Path, cfg: CFG, threshold: float):
     model.eval()
