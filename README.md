@@ -276,7 +276,7 @@ if __name__ == "__main__":
 * Training: From scratch (no pretrained weights)
 * Loss: Binary Cross Entropy with logits
 * Optimizer: Adam
-* Input size: 128×128
+* Input size: 224 x 224 pixels
 
 ---
 
