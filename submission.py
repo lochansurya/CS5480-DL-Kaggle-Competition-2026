@@ -30,11 +30,30 @@ class CFG:
     warmup_epochs: int = 5
 
     dropout: float = 0.3
+    drop_path_rate: float = 0.1  # Stochastic Depth Implementation
     val_split: float = 0.15
-    label_smoothing: float = 0.0   # CHANGED
+    label_smoothing: float = 0.0
     grad_clip: float = 1.0
     tta: bool = False
-    patience: int = 15             # CHANGED
+    patience: int = 15
+
+
+#-----------------
+# stochastic depth
+#-----------------
+class DropPath(nn.Module):
+    def __init__(self, drop_prob=0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob == 0.0 or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        binary_tensor = random_tensor.floor()
+        return x.div(keep_prob) * binary_tensor
 
 
 #-----------------
@@ -56,7 +75,7 @@ def get_transforms(cfg: CFG, train: bool):
 
     if train:
         return T.Compose([
-            T.RandomResizedCrop(cfg.img_size, scale=(0.7, 1.0)),  # CHANGED
+            T.RandomResizedCrop(cfg.img_size, scale=(0.7, 1.0)),
             T.RandomHorizontalFlip(),
             T.ColorJitter(0.4, 0.4, 0.4, 0.15),
             T.RandomApply([T.GaussianBlur(3)], p=0.2),
@@ -136,7 +155,7 @@ class CBAM(nn.Module):
 # model
 #-----------------
 class BasicBlock(nn.Module):
-    def __init__(self, in_c, out_c, stride=1):
+    def __init__(self, in_c, out_c, stride=1, drop_prob=0.0):
         super().__init__()
         self.conv1 = nn.Conv2d(in_c, out_c, 3, stride=stride, padding=1, bias=False)
         self.bn1   = nn.BatchNorm2d(out_c)
@@ -144,6 +163,7 @@ class BasicBlock(nn.Module):
         self.bn2   = nn.BatchNorm2d(out_c)
         self.relu  = nn.ReLU(inplace=True)
         self.cbam  = CBAM(out_c)
+        self.drop_path = DropPath(drop_prob)  # CHANGED
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_c != out_c:
@@ -156,29 +176,35 @@ class BasicBlock(nn.Module):
         out = self.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out = self.cbam(out)
+        out = self.drop_path(out)  # CHANGED
         return self.relu(out + self.shortcut(x))
 
 
-def _make_layer(in_c, out_c, num_blocks, stride):
-    layers = [BasicBlock(in_c, out_c, stride=stride)]
-    for _ in range(1, num_blocks):
-        layers.append(BasicBlock(out_c, out_c))
+def _make_layer(in_c, out_c, num_blocks, stride, drop_rates):  # CHANGED
+    layers = [BasicBlock(in_c, out_c, stride=stride, drop_prob=drop_rates[0])]
+    for i in range(1, num_blocks):
+        layers.append(BasicBlock(out_c, out_c, drop_prob=drop_rates[i]))
     return nn.Sequential(*layers)
 
 
 class Model(nn.Module):
     def __init__(self, *, cfg: CFG):
         super().__init__()
+
+        total_blocks = 3 + 4 + 6 + 3
+        dp_rates = torch.linspace(0, cfg.drop_path_rate, total_blocks).tolist()  # CHANGED
+        idx = 0
+
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(3, stride=2, padding=1),
         )
-        self.layer1 = _make_layer(64,  64,  3, stride=1)
-        self.layer2 = _make_layer(64,  128, 4, stride=2)
-        self.layer3 = _make_layer(128, 256, 6, stride=2)
-        self.layer4 = _make_layer(256, 512, 3, stride=2)
+        self.layer1 = _make_layer(64,  64,  3, stride=1, drop_rates=dp_rates[idx:idx+3]); idx+=3
+        self.layer2 = _make_layer(64,  128, 4, stride=2, drop_rates=dp_rates[idx:idx+4]); idx+=4
+        self.layer3 = _make_layer(128, 256, 6, stride=2, drop_rates=dp_rates[idx:idx+6]); idx+=6
+        self.layer4 = _make_layer(256, 512, 3, stride=2, drop_rates=dp_rates[idx:idx+3])
 
         self.pool = GeM()
 
@@ -234,7 +260,7 @@ def get_scheduler(optimizer, cfg):
         if epoch < cfg.warmup_epochs:
             return (epoch + 1) / cfg.warmup_epochs
         progress = (epoch - cfg.warmup_epochs) / max(cfg.epochs - cfg.warmup_epochs, 1)
-        return 0.5 * (1 + math.cos(math.pi * progress))  # CHANGED
+        return 0.5 * (1 + math.cos(math.pi * progress))
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
@@ -268,7 +294,7 @@ def find_best_threshold(*, model, loader, device):
     labels = np.array(all_labels)
 
     best_t, best_acc = 0.5, 0.0
-    for t in np.linspace(0.05, 0.95, 401):  # CHANGED
+    for t in np.linspace(0.05, 0.95, 401):
         acc = ((probs > t).astype(float) == labels).mean()
         if acc > best_acc:
             best_acc = acc
@@ -279,7 +305,7 @@ def find_best_threshold(*, model, loader, device):
 
 
 #-----------------
-# training loop (unchanged)
+# training loop
 #-----------------
 def _run_epochs(*, model, loader, cfg, device, show_val=False, val_loader=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
