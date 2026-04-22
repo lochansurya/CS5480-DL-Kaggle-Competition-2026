@@ -40,6 +40,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+#================
+# MacOS
+#================
+.DS_Store
 # C extensions
 *.so
 
