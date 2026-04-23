@@ -3,7 +3,7 @@
 DenseNet-121 with CBAM Attention and GeM Pooling
 Binary Image Classification Pipeline
 
-Production-grade implementation with:
+Implementation with:
     - Mixed precision training (AMP)
     - Gradient clipping
     - Early stopping with best checkpoint
