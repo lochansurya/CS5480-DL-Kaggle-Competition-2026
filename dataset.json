@@ -1,0 +1,6 @@
+{
+  "train_class_0": 9000,
+  "train_class_1": 9000,
+  "train_total": 18000,
+  "test_total": 5010
+}

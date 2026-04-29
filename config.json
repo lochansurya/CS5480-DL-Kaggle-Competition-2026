@@ -1,0 +1,17 @@
+{
+  "seed": 42,
+  "img_size": 224,
+  "batch_size": 128,
+  "num_workers": 4,
+  "epochs": 200,
+  "lr": 0.0003,
+  "weight_decay": 0.0001,
+  "dropout": 0.3,
+  "drop_path_rate": 0.0,
+  "val_split": 0.15,
+  "label_smoothing": 0.0,
+  "grad_clip": 1.0,
+  "tta": false,
+  "patience": 15,
+  "warmup_epochs": 5
+}
