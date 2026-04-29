@@ -1,0 +1,51 @@
+\begin{thebibliography}{7}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[He et~al.(2016)He, Zhang, Ren, and Sun]{He2016}
+He, K., Zhang, X., Ren, S., and Sun, J.
+\newblock Deep residual learning for image recognition.
+\newblock In \emph{Proceedings of the IEEE Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pp.\  770--778, 2016.
+
+\bibitem[Huang et~al.(2016)Huang, Sun, Liu, Sedra, and Weinberger]{Huang2016}
+Huang, G., Sun, Y., Liu, Z., Sedra, D., and Weinberger, K.
+\newblock Deep networks with stochastic depth.
+\newblock In \emph{Proceedings of the European Conference on Computer Vision
+  (ECCV)}, pp.\  646--661, 2016.
+
+\bibitem[Loshchilov \& Hutter(2019)Loshchilov and Hutter]{Loshchilov2019}
+Loshchilov, I. and Hutter, F.
+\newblock Decoupled weight decay regularization.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2019.
+
+\bibitem[Radenovi\'{c} et~al.(2018)Radenovi\'{c}, Tolias, and
+  Chum]{Radenovic2018}
+Radenovi\'{c}, F., Tolias, G., and Chum, O.
+\newblock Fine-tuning {CNN} image retrieval with no human annotation.
+\newblock \emph{IEEE Transactions on Pattern Analysis and Machine
+  Intelligence}, 41\penalty0 (7):\penalty0 1655--1668, 2018.
+
+\bibitem[Woo et~al.(2018)Woo, Park, Lee, and Kweon]{Woo2018}
+Woo, S., Park, J., Lee, J.-Y., and Kweon, I.~S.
+\newblock {CBAM}: Convolutional block attention module.
+\newblock In \emph{Proceedings of the European Conference on Computer Vision
+  (ECCV)}, pp.\  3--19, 2018.
+
+\bibitem[Yun et~al.(2019)Yun, Han, Oh, Chun, Choe, and Yoo]{Yun2019}
+Yun, S., Han, D., Oh, S.~J., Chun, S., Choe, J., and Yoo, Y.
+\newblock {CutMix}: Training strategy that makes use of sample pairing.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on
+  Computer Vision (ICCV)}, pp.\  6023--6032, 2019.
+
+\bibitem[Zhang et~al.(2018)Zhang, Ciss\'{e}, Dauphin, and Lopez-Paz]{Zhang2018}
+Zhang, H., Ciss\'{e}, M., Dauphin, Y.~N., and Lopez-Paz, D.
+\newblock mixup: Beyond empirical risk minimization.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2018.
+
+\end{thebibliography}
