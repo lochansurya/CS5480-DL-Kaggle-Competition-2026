@@ -198,6 +198,16 @@ FC Head $\to$ 1 logit & — & — \\
 \vskip -0.1in
 \end{table}
 
+\begin{figure}[t]
+\vskip 0.2in
+\begin{center}
+\includegraphics[width=0.48\textwidth]{figures/architecture-block-diagram.jpeg}
+\end{center}
+\vskip -0.1in
+\caption{Architecture block diagram: CBAM-enhanced ResNet with GeM pooling.}
+\label{fig:arch-diagram}
+\end{figure}
+
 Inside each \textbf{BasicBlock}, two $3\!\times\!3$ Conv--BN--ReLU
 sequences are followed by CBAM attention and DropPath, with a
 shortcut projection for dimension changes.
@@ -362,43 +372,27 @@ epoch 55 and maintained it through the final epoch 80.  Early stopping
 (patience 15) was never triggered, confirming the full epoch budget was
 used.  The optimal decision threshold was found to be $t^* = 0.180$.
 
-Figure~\ref{fig:training-curve} shows the full training and validation
-accuracy curves over 80 epochs.  Both metrics converge to near-perfect
-values by epoch 55.
-
 \begin{table}[t]
 \caption{Training and validation accuracy over epochs.}
 \label{tab:training-curve}
 \vskip 0.15in
 \begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{ccc}
-\toprule
-Epoch & Train Acc & Val Acc \\
-\midrule
-E1   & 0.8015 & 0.9119 \\
-E5   & 0.9400 & 0.9237 \\
-E10  & 0.9578 & 0.9711 \\
-E15  & 0.9712 & 0.9774 \\
-E20  & 0.9801 & 0.9652 \\
-E25  & 0.9829 & 0.9911 \\
-E30  & 0.9892 & 0.9870 \\
-E35  & 0.9921 & 0.9933 \\
-E40  & 0.9954 & 0.9900 \\
-E45  & 0.9970 & 0.9985 \\
-E50  & 0.9979 & 0.9993 \\
-E55  & 0.9985 & 1.0000 \\
-E60  & 0.9988 & 0.9996 \\
-E70  & 0.9993 & 1.0000 \\
-E80  & 0.9993 & 1.0000 \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
+Figure~\ref{fig:train-curve} shows the training and validation accuracy
+curves over 80 epochs.
 \end{center}
 \vskip -0.1in
 \end{table}
+
+\begin{figure}[t]
+\vskip 0.2in
+\begin{center}
+\includegraphics[width=0.48\textwidth]{figures/train-val-accuracy-plot.jpeg}
+\end{center}
+\vskip -0.1in
+\caption{Training and validation accuracy over 80 epochs. Blue: train
+accuracy, Orange: validation accuracy.}
+\label{fig:train-curve}
+\end{figure}
 
 Table~\ref{tab:results} compares this submission (v3) against the
 previous best (v2).
@@ -423,6 +417,17 @@ Gain & & +0.000250 \\
 \end{center}
 \vskip -0.1in
 \end{table}
+
+\begin{figure}[t]
+\vskip 0.2in
+\begin{center}
+includegraphics[width=0.4\textwidth]{figures/final-numbers.jpeg}
+\end{center}
+\vskip -0.1in
+\caption{Final results: validation accuracy, optimal threshold, and public
+leaderboard score.}
+\label{fig:final-numbers}
+\end{figure}
 
 \subsection{Key Observations}
 
