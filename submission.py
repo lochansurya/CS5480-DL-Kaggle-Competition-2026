@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DenseNet-121 with CBAM Attention and GeM Pooling
+Custom ResNet-34-like network with CBAM Attention and GeM Pooling
 Binary Image Classification Pipeline
 
 Implementation with:
@@ -22,6 +22,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -30,7 +33,7 @@ import torchvision.transforms as T
 from dataclasses import dataclass
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,28 +49,34 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CFG:
     seed: int = 42
+    ensemble_seeds: tuple[int, ...] = (42, 43, 44)
+    split_seed: int = 42
 
     img_size: int = 224
-    batch_size: int = 64
+    batch_size: int = 128
     num_workers: int = 4
 
-    epochs: int = 80
-    lr: float = 3e-4
+    epochs: int = 100
+    lr: float = 7e-4
     weight_decay: float = 1e-4
 
-    dropout: float = 0.3
-    drop_path_rate: float = 0.0  # Disabled for DenseNet (dense connections provide regularization)
+    dropout: float = 0.2
+    drop_path_rate: float = 0.1
     val_split: float = 0.15
     label_smoothing: float = 0.0
+    mixup_alpha: float = 0.0
+    cutmix_prob: float = 0.0
     grad_clip: float = 1.0
-    tta: bool = False
-    patience: int = 15
+    tta: bool = True
+    patience: int = 20
     warmup_epochs: int = 5
 
     def save(self) -> None:
         path = Path("config.json")
         cfg_dict = {
             "seed": self.seed,
+            "ensemble_seeds": list(self.ensemble_seeds),
+            "split_seed": self.split_seed,
             "img_size": self.img_size,
             "batch_size": self.batch_size,
             "num_workers": self.num_workers,
@@ -78,6 +87,8 @@ class CFG:
             "drop_path_rate": self.drop_path_rate,
             "val_split": self.val_split,
             "label_smoothing": self.label_smoothing,
+            "mixup_alpha": self.mixup_alpha,
+            "cutmix_prob": self.cutmix_prob,
             "grad_clip": self.grad_clip,
             "tta": self.tta,
             "patience": self.patience,
@@ -92,6 +103,36 @@ class CFG:
 #-------------------------------------
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
+
+# Edge maps are near-binary (mostly 0, bright at outlines).
+# Use simple [-1,1] normalisation instead of ImageNet stats.
+EDGE_MEAN = [0.5, 0.5, 0.5]
+EDGE_STD  = [0.5, 0.5, 0.5]
+
+
+#-------------------------------------
+# ShapePreprocess
+#-------------------------------------
+class ShapePreprocess:
+    """
+    Converts a PIL RGB image into a grayscale edge map:
+        RGB → L → contrast boost → FIND_EDGES → RGB (3 identical channels)
+
+    Rationale for this dataset (CLEVR-style renders):
+      - Colour is irrelevant: same colours appear in both classes.
+      - The discriminative signal is purely shape — sphere (rounded outline)
+        vs cube/cylinder (angular outline).
+      - FIND_EDGES extracts outlines whose curvature directly encodes shape,
+        making it trivial for the model to learn the sphere/cube distinction.
+    """
+    def __init__(self, contrast: float = 3.0):
+        self.contrast = contrast
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        img = img.convert("L")
+        img = ImageEnhance.Contrast(img).enhance(self.contrast)
+        img = img.filter(ImageFilter.FIND_EDGES)
+        return img.convert("RGB")
 
 
 #-------------------------------------
@@ -148,19 +189,20 @@ def get_device() -> torch.device:
 # Transforms
 #-------------------------------------
 def get_transforms(img_size: int, train: bool) -> T.Compose:
+    preprocess = ShapePreprocess(contrast=3.0)
     if train:
         return T.Compose([
-            T.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
+            preprocess,                          # grayscale → contrast → edge map
+            T.Resize((img_size, img_size)),
             T.RandomHorizontalFlip(),
-            T.ColorJitter(0.4, 0.4, 0.4, 0.15),
-            T.RandomApply([T.GaussianBlur(3)], p=0.2),
             T.ToTensor(),
-            T.Normalize(MEAN, STD),
+            T.Normalize(EDGE_MEAN, EDGE_STD),
         ])
     return T.Compose([
+        preprocess,
         T.Resize((img_size, img_size)),
         T.ToTensor(),
-        T.Normalize(MEAN, STD),
+        T.Normalize(EDGE_MEAN, EDGE_STD),
     ])
 
 
@@ -270,128 +312,75 @@ class CBAM(nn.Module):
 
 
 #-------------------------------------
-# DenseLayer
+# BasicBlock
 #-------------------------------------
-class DenseLayer(nn.Module):
+class BasicBlock(nn.Module):
     """
-    Single layer in DenseNet.
+    ResNet basic block with CBAM attention.
 
-    BN -> ReLU -> Conv3x3 -> DropPath
-
-    Each layer receives feature maps from all preceding layers.
-    This dense connectivity improves gradient flow.
+    The residual branch is lightly regularized with stochastic depth, then
+    added back to the shortcut before the final activation.
     """
-    def __init__(self, in_c: int, growth_rate: int, drop_prob: float = 0.0):
+    expansion = 1
+
+    def __init__(self, in_c: int, out_c: int, stride: int = 1, drop_prob: float = 0.0):
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.BatchNorm2d(in_c),
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_c, out_c, 3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(out_c),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_c, growth_rate, 3, stride=1, padding=1, bias=False),
         )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_c, out_c, 3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(out_c),
+        )
+        self.cbam = CBAM(out_c)
+        self.downsample = None
+        if stride != 1 or in_c != out_c:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_c, out_c, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_c),
+            )
         self.drop_path = DropPath(drop_prob)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.drop_path(self.layers(x))
+        identity = x if self.downsample is None else self.downsample(x)
+        out = self.conv1(x)
+        out = self.conv2(out)
+        out = self.cbam(out)
+        out = self.drop_path(out)
+        return self.relu(out + identity)
 
 
 #-------------------------------------
-# DenseNetBlock
-#-------------------------------------
-class DenseNetBlock(nn.Module):
-    """
-    Dense block with CBAM attention.
-
-    DenseNet Architecture:
-        x0 ----> concatenated output
-        x1 ----> concatenated output
-        ...
-        xN ----> concatenated output
-
-    After concatenation, applies CBAM for attention.
-    """
-    def __init__(self, in_c: int, growth_rate: int, num_layers: int, drop_prob: float):
-        super().__init__()
-        self.layers = nn.ModuleList([
-            DenseLayer(in_c + i * growth_rate, growth_rate, drop_prob)
-            for i in range(num_layers)
-        ])
-        self.cbam = CBAM(in_c + num_layers * growth_rate)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.layers:
-            x = torch.cat([x, layer(x)], dim=1)
-        return self.cbam(x)
-
-
-#-------------------------------------
-# Transition
-#-------------------------------------
-class Transition(nn.Module):
-    """
-    Transition layer between dense blocks.
-
-    Reduces number of channels and spatial dimensions.
-
-    Architecture:
-        x -> BN -> ReLU -> Conv1x1 -> AvgPool2x2 -> output
-    """
-    def __init__(self, in_c: int, out_c: int):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.BatchNorm2d(in_c),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_c, out_c, 1, bias=False),
-            nn.AvgPool2d(2, stride=2),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.layers(x)
-
-
-#-------------------------------------
-# Model: DenseNet-121 + CBAM + GeM
+# Model: ResNet-34-like + CBAM + GeM
 #-------------------------------------
 class Model(nn.Module):
     """
-    DenseNet-121 with CBAM attention and GeM pooling.
-
-    Architecture (DenseNet-121 style):
+    Custom ResNet-34-like network with CBAM attention and GeM pooling.
 
         Stem: Conv7x7(3->64) + BN + ReLU + MaxPool3x3
 
-        Dense Block 1: 6 layers, growth=32
-        Output: 64 + (6 x 32) = 256 channels
+        Residual stages: 3, 4, 6, 3 blocks
+        Final channels: 512
 
-        Transition 1: 256 -> 128, 2x downsampling
-        Dense Block 2: 12 layers, growth=32
-        Output: 128 + (12 x 32) = 512 channels
-
-        Transition 2: 512 -> 256, 2x downsampling
-        Dense Block 3: 24 layers, growth=32
-        Output: 256 + (24 x 32) = 1024 channels
-
-        Transition 3: 1024 -> 512, 2x downsampling
-        Dense Block 4: 16 layers, growth=32
-        Output: 512 + (16 x 32) = 1024 channels
-
-        GeM Pooling -> 1024 channels
-        Classifier: Dropout -> Linear(1024->256) -> ReLU ->
+        GeM Pooling -> 512 channels
+        Classifier: Dropout -> Linear(512->256) -> ReLU ->
                    Dropout -> Linear(256->1)
 
     Key Features:
-        - Dense connections: all layers connected to each other
-        - CBAM attention after each dense block
+        - ResNet-34-like 3+4+6+3 block layout trained from scratch
+        - CBAM attention in every residual block
         - GeM pooling for better feature representation
         - DropPath for regularization
     """
-    GROWTH_RATE = 32
-
     def __init__(self, cfg: CFG):
         super().__init__()
-        block_config = (6, 12, 24, 16)
-        total_layers = sum(block_config)
-        dp = torch.linspace(0, cfg.drop_path_rate, total_layers).tolist()
-        idx = 0
+        self.in_c = 64
+        block_config = (3, 4, 6, 3)
+        drop_probs = torch.linspace(0, cfg.drop_path_rate, sum(block_config)).tolist()
+        self._drop_idx = 0
 
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
@@ -400,61 +389,50 @@ class Model(nn.Module):
             nn.MaxPool2d(3, stride=2, padding=1),
         )
 
-        num_features = 64
-        self.dense1 = DenseNetBlock(num_features, self.GROWTH_RATE, block_config[0], cfg.drop_path_rate)
-        num_features = num_features + block_config[0] * self.GROWTH_RATE
-        self.trans1 = Transition(num_features, num_features // 2)
-        num_features = num_features // 2
+        self.layer1 = self._make_layer(64, block_config[0], stride=1, drop_probs=drop_probs)
+        self.layer2 = self._make_layer(128, block_config[1], stride=2, drop_probs=drop_probs)
+        self.layer3 = self._make_layer(256, block_config[2], stride=2, drop_probs=drop_probs)
+        self.layer4 = self._make_layer(512, block_config[3], stride=2, drop_probs=drop_probs)
 
-        self.dense2 = DenseNetBlock(num_features, self.GROWTH_RATE, block_config[1], cfg.drop_path_rate)
-        num_features = num_features + block_config[1] * self.GROWTH_RATE
-        self.trans2 = Transition(num_features, num_features // 2)
-        num_features = num_features // 2
-
-        self.dense3 = DenseNetBlock(num_features, self.GROWTH_RATE, block_config[2], cfg.drop_path_rate)
-        num_features = num_features + block_config[2] * self.GROWTH_RATE
-        self.trans3 = Transition(num_features, num_features // 2)
-        num_features = num_features // 2
-
-        self.dense4 = DenseNetBlock(num_features, self.GROWTH_RATE, block_config[3], cfg.drop_path_rate)
-        num_features = num_features + block_config[3] * self.GROWTH_RATE
-
-        self.bn_final = nn.BatchNorm2d(num_features)
-        self.pool = GeM()
+        self.pool = GeM(p=3.0)
 
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(cfg.dropout),
-            nn.Linear(num_features, 256),
+            nn.Linear(512, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(cfg.dropout / 2),
             nn.Linear(256, 1),
         )
 
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+    def _make_layer(
+        self,
+        out_c: int,
+        blocks: int,
+        stride: int,
+        drop_probs: list[float],
+    ) -> nn.Sequential:
+        layers = []
+        for i in range(blocks):
+            block_stride = stride if i == 0 else 1
+            layers.append(
+                BasicBlock(
+                    self.in_c,
+                    out_c,
+                    stride=block_stride,
+                    drop_prob=drop_probs[self._drop_idx],
+                )
+            )
+            self.in_c = out_c
+            self._drop_idx += 1
+        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x = self.dense1(x)
-        x = self.trans1(x)
-        x = self.dense2(x)
-        x = self.trans2(x)
-        x = self.dense3(x)
-        x = self.trans3(x)
-        x = self.dense4(x)
-        x = self.bn_final(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
         x = self.pool(x)
         return self.classifier(x)
 
@@ -509,21 +487,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> floa
     return correct / total
 
 
-@torch.no_grad()
-#-------------------------------------
-# Find Best Threshold
-#-------------------------------------
-def find_best_threshold(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
-    model.eval()
-    all_probs, all_labels = [], []
-    for xb, yb in loader:
-        probs = torch.sigmoid(model(xb.to(device))).cpu().numpy().flatten()
-        all_probs.extend(probs)
-        all_labels.extend(yb.numpy().flatten())
-
-    probs = np.array(all_probs)
-    labels = np.array(all_labels)
-
+def find_best_threshold_from_probs(probs: np.ndarray, labels: np.ndarray) -> float:
     best_t, best_acc = 0.5, 0.0
     for t in np.linspace(0.05, 0.95, 401):
         acc = ((probs > t).astype(float) == labels).mean()
@@ -535,6 +499,25 @@ def find_best_threshold(model: nn.Module, loader: DataLoader, device: torch.devi
     return best_t
 
 
+@torch.no_grad()
+def collect_probs_and_labels(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    cfg: CFG,
+) -> tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    all_probs, all_labels = [], []
+    for xb, yb in loader:
+        xb = xb.to(device)
+        probs = torch.sigmoid(model(xb))
+        if cfg.tta:
+            probs = (probs + torch.sigmoid(model(torch.flip(xb, dims=[3])))) * 0.5
+        all_probs.extend(probs.cpu().numpy().flatten())
+        all_labels.extend(yb.numpy().flatten())
+    return np.array(all_probs), np.array(all_labels)
+
+
 #-------------------------------------
 # run_epochs
 #-------------------------------------
@@ -544,6 +527,7 @@ def run_epochs(
     cfg: CFG,
     device: torch.device,
     val_loader: Optional[DataLoader] = None,
+    history: Optional[dict] = None,
 ) -> nn.Module:
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = get_scheduler(optimizer, cfg)
@@ -581,10 +565,17 @@ def run_epochs(
 
         avg_loss = total_loss / len(loader)
         train_acc = correct / total
+        lr_now = scheduler.get_last_lr()[0]
+
+        if history is not None:
+            history["train_loss"].append(avg_loss)
+            history["train_acc"].append(train_acc)
+            history["lr"].append(lr_now)
 
         if val_loader is not None:
             val_acc = evaluate(model, val_loader, device)
-            lr_now = scheduler.get_last_lr()[0]
+            if history is not None:
+                history["val_acc"].append(val_acc)
             logger.info(
                 f"Epoch {epoch + 1:3d}/{cfg.epochs} | "
                 f"Train Loss: {avg_loss:.4f} | "
@@ -625,7 +616,7 @@ def train_with_validation(model: nn.Module, train_dir: Path, cfg: CFG) -> tuple[
     train_ds = ImageDataset(train_dir, cfg, train=True)
     val_ds = ImageDataset(train_dir, cfg, train=False)
 
-    g = torch.Generator().manual_seed(cfg.seed)
+    g = torch.Generator().manual_seed(cfg.split_seed)
     indices = torch.randperm(len(train_ds), generator=g).tolist()
     split = int((1 - cfg.val_split) * len(train_ds))
     train_idx, val_idx = indices[:split], indices[split:]
@@ -648,8 +639,47 @@ def train_with_validation(model: nn.Module, train_dir: Path, cfg: CFG) -> tuple[
     )
 
     model = run_epochs(model, train_loader, cfg, device, val_loader)
-    threshold = find_best_threshold(model, val_loader, device)
+    probs, labels = collect_probs_and_labels(model, val_loader, device, cfg)
+    threshold = find_best_threshold_from_probs(probs, labels)
     return model, threshold
+
+
+def train_with_validation_probs(
+    model: nn.Module,
+    train_dir: Path,
+    cfg: CFG,
+    history: Optional[dict] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    device = get_device()
+    model = model.to(device)
+
+    train_ds = ImageDataset(train_dir, cfg, train=True)
+    val_ds = ImageDataset(train_dir, cfg, train=False)
+
+    g = torch.Generator().manual_seed(cfg.split_seed)
+    indices = torch.randperm(len(train_ds), generator=g).tolist()
+    split = int((1 - cfg.val_split) * len(train_ds))
+    train_idx, val_idx = indices[:split], indices[split:]
+
+    train_loader = DataLoader(
+        Subset(train_ds, train_idx),
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=cfg.num_workers > 0,
+    )
+    val_loader = DataLoader(
+        Subset(val_ds, val_idx),
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=cfg.num_workers > 0,
+    )
+
+    model = run_epochs(model, train_loader, cfg, device, val_loader, history=history)
+    return collect_probs_and_labels(model, val_loader, device, cfg)
 
 
 #-------------------------------------
@@ -673,27 +703,301 @@ def train_full(model: nn.Module, train_dir: Path, cfg: CFG) -> nn.Module:
 
 
 @torch.no_grad()
-#-------------------------------------
-# predict
-#-------------------------------------
-def predict(model: nn.Module, test_dir: Path, cfg: CFG, threshold: float) -> list[tuple[str, int]]:
+def predict_probs(model: nn.Module, test_dir: Path, cfg: CFG) -> list[tuple[str, float]]:
     model.eval()
     device = next(model.parameters()).device
-    normalize = T.Compose([T.ToTensor(), T.Normalize(MEAN, STD)])
+    preprocess = ShapePreprocess(contrast=3.0)
+    normalize = T.Compose([T.ToTensor(), T.Normalize(EDGE_MEAN, EDGE_STD)])
 
     def prep(img):
+        img = preprocess(img)
         img = img.resize((cfg.img_size, cfg.img_size), Image.BILINEAR)
         return normalize(img).unsqueeze(0).to(device)
 
-    results = []
+    def predict_prob(img: Image.Image) -> float:
+        tensors = [prep(img)]
+        if cfg.tta:
+            tensors.append(prep(img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)))
+        batch = torch.cat(tensors, dim=0)
+        return torch.sigmoid(model(batch)).mean().item()
+
+    probs_by_id = []
     for path in sorted(Path(test_dir).iterdir()):
         if not path.is_file():
             continue
         img = Image.open(path).convert("RGB")
-        prob = torch.sigmoid(model(prep(img))).item()
-        results.append((path.name, int(prob > threshold)))
+        prob = predict_prob(img)
+        probs_by_id.append((path.name, prob))
 
-    return results
+    return probs_by_id
+
+
+#-------------------------------------
+# predict
+#-------------------------------------
+def labels_from_probs(
+    probs_by_id: list[tuple[str, float]],
+    threshold: float,
+) -> list[tuple[str, int]]:
+    return [(image_id, int(prob > threshold)) for image_id, prob in probs_by_id]
+
+
+#-------------------------------------
+# save_report_plots
+#-------------------------------------
+def save_report_plots(
+    histories: list[dict],
+    val_probs: np.ndarray,
+    val_labels: np.ndarray,
+    threshold: float,
+    train_dir: Path,
+    out_dir: Path = Path("plots"),
+) -> None:
+    from sklearn.metrics import (
+        roc_curve, auc, confusion_matrix,
+        precision_score, recall_score, f1_score,
+    )
+
+    out_dir.mkdir(exist_ok=True)
+    preds = (val_probs > threshold).astype(int)
+    COLORS = plt.cm.tab10.colors
+
+    plt.rcParams.update({"font.size": 11, "axes.titlesize": 13, "axes.titleweight": "bold"})
+
+    # ── 1. Training curves ──────────────────────────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig.suptitle("Training Curves per Seed", fontsize=15, fontweight="bold", y=1.01)
+
+    for i, h in enumerate(histories):
+        color = COLORS[i % len(COLORS)]
+        label = f"Seed {h.get('seed', i)}"
+        n = len(h["train_loss"])
+        ep = range(1, n + 1)
+
+        axes[0, 0].plot(ep, h["train_loss"], color=color, lw=1.8, label=label)
+        axes[0, 1].plot(ep, [a * 100 for a in h["train_acc"]], color=color, lw=1.8, label=label)
+        if h.get("val_acc"):
+            axes[1, 0].plot(range(1, len(h["val_acc"]) + 1),
+                            [a * 100 for a in h["val_acc"]], color=color, lw=1.8, label=label)
+        axes[1, 1].plot(ep, h["lr"], color=color, lw=1.8, label=label)
+
+    for ax, title, ylabel in [
+        (axes[0, 0], "Training Loss",        "BCE Loss"),
+        (axes[0, 1], "Training Accuracy",    "Accuracy (%)"),
+        (axes[1, 0], "Validation Accuracy",  "Accuracy (%)"),
+        (axes[1, 1], "Learning Rate",        "LR"),
+    ]:
+        ax.set_title(title)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(ylabel)
+        ax.legend(fontsize=9, loc="best")
+        ax.grid(True, alpha=0.35, linestyle="--")
+        ax.tick_params(labelsize=9)
+
+    axes[1, 1].set_yscale("log")
+    axes[1, 0].axhline(75.91, color="red", linestyle=":", lw=1.2, label="Best (75.91%)")
+    axes[1, 0].legend(fontsize=9)
+
+    plt.tight_layout()
+    fig.savefig(out_dir / "training_curves.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved training_curves.png")
+
+    # ── 2. ROC Curve ────────────────────────────────────────────────────────
+    fpr, tpr, roc_thresholds = roc_curve(val_labels, val_probs)
+    roc_auc = auc(fpr, tpr)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(fpr, tpr, color="steelblue", lw=2.5, label=f"ROC curve (AUC = {roc_auc:.4f})")
+    ax.plot([0, 1], [0, 1], "k--", lw=1.2, label="Random classifier")
+    ax.fill_between(fpr, tpr, alpha=0.08, color="steelblue")
+    ax.set_title("Receiver Operating Characteristic (ROC) Curve")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_xlim([0, 1])
+    ax.set_ylim([0, 1.02])
+    ax.set_xticks(np.arange(0, 1.1, 0.1))
+    ax.set_yticks(np.arange(0, 1.1, 0.1))
+    ax.legend(fontsize=10, loc="lower right")
+    ax.grid(True, alpha=0.35, linestyle="--")
+    ax.tick_params(labelsize=9)
+    fig.savefig(out_dir / "roc_curve.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved roc_curve.png")
+
+    # ── 3. Confusion Matrix ──────────────────────────────────────────────────
+    cm = confusion_matrix(val_labels, preds)
+    total = cm.sum()
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    classes = ["Class 0\n(no sphere+cube)", "Class 1\n(sphere+cube)"]
+    ax.set_xticks([0, 1])
+    ax.set_yticks([0, 1])
+    ax.set_xticklabels(classes, fontsize=9)
+    ax.set_yticklabels(classes, fontsize=9)
+    ax.set_xlabel("Predicted Label", fontsize=10)
+    ax.set_ylabel("True Label", fontsize=10)
+    ax.set_title("Confusion Matrix")
+    thresh = cm.max() / 2
+    for i in range(2):
+        for j in range(2):
+            ax.text(j, i,
+                    f"{cm[i, j]:,}\n({100 * cm[i, j] / total:.1f}%)",
+                    ha="center", va="center", fontsize=11,
+                    color="white" if cm[i, j] > thresh else "black")
+    plt.tight_layout()
+    fig.savefig(out_dir / "confusion_matrix.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved confusion_matrix.png")
+
+    # ── 4. Classification Metrics Bar Chart ──────────────────────────────────
+    acc    = float((preds == val_labels).mean())
+    prec   = float(precision_score(val_labels, preds))
+    rec    = float(recall_score(val_labels, preds))
+    f1     = float(f1_score(val_labels, preds))
+
+    names  = ["Accuracy", "Precision", "Recall", "F1-Score", "AUC-ROC"]
+    values = [acc, prec, rec, f1, roc_auc]
+    bar_colors = ["steelblue", "coral", "mediumseagreen", "orchid", "gold"]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(names, values, color=bar_colors, edgecolor="white", linewidth=1.2, width=0.55)
+    ax.set_ylim(0, 1.08)
+    ax.set_title("Classification Metrics Summary")
+    ax.set_ylabel("Score")
+    ax.set_xlabel("Metric")
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.9, alpha=0.7)
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.012,
+                f"{val:.4f}", ha="center", va="bottom", fontsize=11, fontweight="bold")
+    ax.grid(True, alpha=0.3, axis="y", linestyle="--")
+    ax.tick_params(labelsize=10)
+    plt.tight_layout()
+    fig.savefig(out_dir / "classification_metrics.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved classification_metrics.png")
+
+    # ── 5. Predicted Probability Distribution ───────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(val_probs[val_labels == 0], bins=50, alpha=0.65,
+            color="steelblue", label="True Class 0 (no sphere+cube)", edgecolor="white")
+    ax.hist(val_probs[val_labels == 1], bins=50, alpha=0.65,
+            color="coral",     label="True Class 1 (sphere+cube)",    edgecolor="white")
+    ax.axvline(threshold, color="black", linestyle="--", linewidth=2,
+               label=f"Decision threshold = {threshold:.3f}")
+    ax.set_title("Predicted Probability Distribution by True Class")
+    ax.set_xlabel("Predicted Probability (P(Class 1))")
+    ax.set_ylabel("Sample Count")
+    ax.legend(fontsize=10)
+    ax.set_xticks(np.arange(0, 1.1, 0.1))
+    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.tick_params(labelsize=9)
+    plt.tight_layout()
+    fig.savefig(out_dir / "probability_distribution.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved probability_distribution.png")
+
+    # ── 6. Threshold Sensitivity ────────────────────────────────────────────
+    thresholds = np.linspace(0.01, 0.99, 500)
+    accs = [((val_probs > t).astype(int) == val_labels).mean() for t in thresholds]
+    best_idx = int(np.argmax(accs))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(thresholds, [a * 100 for a in accs], color="steelblue", lw=2.2, label="Val Accuracy")
+    ax.axvline(threshold, color="red", linestyle="--", lw=1.8,
+               label=f"Chosen threshold = {threshold:.3f}")
+    ax.axhline(accs[best_idx] * 100, color="gray", linestyle=":", lw=1.2,
+               label=f"Peak = {accs[best_idx] * 100:.2f}%")
+    ax.set_title("Validation Accuracy vs Decision Threshold")
+    ax.set_xlabel("Decision Threshold")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_xticks(np.arange(0, 1.05, 0.1))
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.35, linestyle="--")
+    ax.tick_params(labelsize=9)
+    plt.tight_layout()
+    fig.savefig(out_dir / "threshold_sensitivity.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved threshold_sensitivity.png")
+
+    # ── 7. Dataset Distribution ──────────────────────────────────────────────
+    n0 = len(list((train_dir / "0").glob("*")))
+    n1 = len(list((train_dir / "1").glob("*")))
+    total_imgs = n0 + n1
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    fig.suptitle("Training Dataset Distribution", fontsize=14, fontweight="bold")
+
+    bars = axes[0].bar(
+        ["Class 0\n(no sphere+cube)", "Class 1\n(sphere+cube)"],
+        [n0, n1], color=["steelblue", "coral"], edgecolor="white", width=0.5
+    )
+    for bar, val in zip(bars, [n0, n1]):
+        axes[0].text(bar.get_x() + bar.get_width() / 2,
+                     bar.get_height() + total_imgs * 0.005,
+                     f"{val:,}\n({100 * val / total_imgs:.1f}%)",
+                     ha="center", va="bottom", fontsize=11, fontweight="bold")
+    axes[0].set_title("Class Count")
+    axes[0].set_ylabel("Number of Images")
+    axes[0].set_ylim(0, max(n0, n1) * 1.15)
+    axes[0].grid(True, alpha=0.3, axis="y", linestyle="--")
+    axes[0].tick_params(labelsize=9)
+
+    axes[1].pie([n0, n1],
+                labels=["Class 0\n(no sphere+cube)", "Class 1\n(sphere+cube)"],
+                colors=["steelblue", "coral"],
+                autopct="%1.1f%%", startangle=90,
+                textprops={"fontsize": 10},
+                wedgeprops={"edgecolor": "white", "linewidth": 1.5})
+    axes[1].set_title("Class Balance")
+
+    plt.tight_layout()
+    fig.savefig(out_dir / "dataset_distribution.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved dataset_distribution.png")
+
+    # ── 8. Precision-Recall Curve ────────────────────────────────────────────
+    from sklearn.metrics import precision_recall_curve, average_precision_score
+    precision_curve, recall_curve, _ = precision_recall_curve(val_labels, val_probs)
+    avg_prec = average_precision_score(val_labels, val_probs)
+    baseline = val_labels.mean()
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(recall_curve, precision_curve, color="mediumseagreen", lw=2.5,
+            label=f"PR curve (AP = {avg_prec:.4f})")
+    ax.axhline(baseline, color="gray", linestyle="--", lw=1.2,
+               label=f"Baseline (class freq = {baseline:.3f})")
+    ax.fill_between(recall_curve, precision_curve, alpha=0.08, color="mediumseagreen")
+    ax.set_title("Precision-Recall Curve")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_xlim([0, 1])
+    ax.set_ylim([0, 1.02])
+    ax.set_xticks(np.arange(0, 1.1, 0.1))
+    ax.set_yticks(np.arange(0, 1.1, 0.1))
+    ax.legend(fontsize=10, loc="lower left")
+    ax.grid(True, alpha=0.35, linestyle="--")
+    ax.tick_params(labelsize=9)
+    plt.tight_layout()
+    fig.savefig(out_dir / "precision_recall_curve.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved precision_recall_curve.png")
+
+    logger.info(
+        f"\n{'='*50}\nReport Metrics Summary\n{'='*50}\n"
+        f"  Accuracy  : {acc:.4f} ({acc*100:.2f}%)\n"
+        f"  Precision : {prec:.4f}\n"
+        f"  Recall    : {rec:.4f}\n"
+        f"  F1-Score  : {f1:.4f}\n"
+        f"  AUC-ROC   : {roc_auc:.4f}\n"
+        f"  Avg Prec  : {avg_prec:.4f}\n"
+        f"  Threshold : {threshold:.3f}\n"
+        f"{'='*50}\n"
+        f"Saved 8 plots -> {out_dir}/"
+    )
 
 
 #-------------------------------------
@@ -723,25 +1027,58 @@ def generate_predictions(data_dir: str) -> None:
 
     data_dir = Path(data_dir)
     train_dir = data_dir / "train"
+    test_dir = data_dir / "test"
     save_dataset_info(data_dir)
 
-    set_seed(cfg.seed)
+    val_probs_per_seed = []
+    val_labels = None
+    test_probs_per_seed = []
+    image_ids = None
+    histories = []
 
-    logger.info("=== Phase 1: Training with validation ===")
-    model = Model(cfg)
-    model, threshold = train_with_validation(model, train_dir, cfg)
+    for seed in cfg.ensemble_seeds:
+        logger.info(f"=== Seed {seed}: Validation training ===")
+        cfg.seed = seed
+        set_seed(cfg.seed)
+        model = Model(cfg)
+        h = {"seed": seed, "train_loss": [], "train_acc": [], "val_acc": [], "lr": []}
+        histories.append(h)
+        val_probs, labels = train_with_validation_probs(model, train_dir, cfg, history=h)
+        val_probs_per_seed.append(val_probs)
+        if val_labels is None:
+            val_labels = labels
+        elif not np.array_equal(val_labels, labels):
+            raise RuntimeError("Validation labels changed across seeds; check split_seed.")
 
-    logger.info("=== Phase 2: Retraining on full dataset ===")
-    model = Model(cfg)
-    model = train_full(model, train_dir, cfg)
+        logger.info(f"=== Seed {seed}: Full-data retraining ===")
+        set_seed(cfg.seed)
+        model = Model(cfg)
+        model = train_full(model, train_dir, cfg)
 
-    logger.info("=== Phase 3: Predicting ===")
-    results = predict(model, test_dir, cfg, threshold)
+        logger.info(f"=== Seed {seed}: Test probability prediction ===")
+        probs_by_id = predict_probs(model, test_dir, cfg)
+        ids = [image_id for image_id, _ in probs_by_id]
+        probs = np.array([prob for _, prob in probs_by_id])
+        test_probs_per_seed.append(probs)
+        if image_ids is None:
+            image_ids = ids
+        elif image_ids != ids:
+            raise RuntimeError("Test image ordering changed across seeds.")
+
+    logger.info("=== Averaging ensemble probabilities ===")
+    ensemble_val_probs = np.mean(np.stack(val_probs_per_seed, axis=0), axis=0)
+    threshold = find_best_threshold_from_probs(ensemble_val_probs, val_labels)
+    ensemble_test_probs = np.mean(np.stack(test_probs_per_seed, axis=0), axis=0)
+    results = labels_from_probs(list(zip(image_ids, ensemble_test_probs)), threshold)
 
     df = pd.DataFrame(results, columns=["ID", "TARGET"])
     df.to_csv("submission.csv", index=False)
     logger.info(f"Saved {len(df)} predictions -> submission.csv")
 
+    save_report_plots(histories, ensemble_val_probs, val_labels, threshold, train_dir)
+
 
 if __name__ == "__main__":
-    generate_predictions(input().strip())
+    import sys
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else "data"
+    generate_predictions(data_dir)
