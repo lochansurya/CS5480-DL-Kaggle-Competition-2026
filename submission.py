@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CFG:
     seed: int = 42
-    ensemble_seeds: tuple[int, ...] = (42, 43, 44)
+    ensemble_seeds: tuple[int, ...] = (42,)
     split_seed: int = 42
 
     img_size: int = 224

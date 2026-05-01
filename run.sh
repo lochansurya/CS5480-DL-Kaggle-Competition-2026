@@ -176,7 +176,7 @@ fi
 # -------------------------
 echo "[7] Running submission pipeline..."
 
-echo "$DATA_DIR" | python submission.py
+python submission.py "$DATA_DIR"
 
 echo "✅ Pipeline executed"
 
@@ -224,4 +224,3 @@ fi
 # DONE
 # -------------------------
 echo "========== DONE =========="
-

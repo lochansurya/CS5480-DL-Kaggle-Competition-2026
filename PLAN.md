@@ -1,92 +1,111 @@
-# Plan: Improve Submission Score from 75.9% to >80%
+# Plan: Edge-Map Preprocessing — Targeting 80%
 
-## Constraints (per README.md)
+## Constraints
 - ❌ No pretrained models allowed (train from scratch)
 - ✓ Image size: 224 x 224 pixels (fixed)
 
 ## Current Status
-- **Current Score**: 75.9%
-- **Val Accuracy**: ~99% (severe overfitting)
-- **Model**: Custom ResNet-34-like (3+4+6+3 blocks)
+- **All-Time Best Score**: **76.88%** (Resnet-34 Ensemble + Train-100, 2026-05-01) ⭐ NEW BEST
+- **Previous Best**: 75.91% (GeM Pooling + Stochastic Depth, April 21)
+- **Target**: 80%
+- **Model**: Custom ResNet-34-like (3+4+6+3 blocks) + CBAM + GeM
+- **Next run**: Edge-map preprocessing (`ShapePreprocess`) — not yet submitted
 
-## Root Cause Analysis: Why the Gap?
+## Root Cause Analysis: The Augmentation Trap
 
-### The Problem: "Memorization" vs "Generalization"
-The model achieves ~99% validation accuracy but only 75.9% test accuracy. This 23% gap indicates:
+### Why the "Anti-Overfit" Strategy Failed
+The recent attempt to heavily regularize the model (MixUp 0.8, CutMix 0.5, Label Smoothing 0.1) actively hurt test performance. The hard ceiling around ~75.5% - 75.9% across multiple architectures is not a capacity limit; it is a **signal extraction problem**.
 
-1. **Learns training set noise** - Model memorizes specific training images rather than learning generalizable features
-2. **Background features** - May be learning backgrounds that differ between train/test distributions
-3. **Insufficient regularization** - Not enough forcing function to learn robust features
-
-### Why Current Regularization Fails:
-| Issue | Current Value | Problem |
-|-------|------------|---------|
-| Dropout | 0.3 | Too weak for 16-block network |
-| DropPath | 0.1 | Too conservative |
-| Weight Decay | 1e-4 | Allows large weights |
-| MixUp | 0.4 | Not aggressive enough |
+1. **Destructive Augmentations:** In rendered synthetic images, the crucial differences between Class 0 and Class 1 are crisp, high-frequency geometric details or specific shading patterns. Blurring (GaussianBlur), cutting boxes (RandomErasing), and blending (MixUp) destroyed these exact discriminative features.
+2. **Label Smoothing Penalty:** By forcing targets to 0.9 and 0.1, the model was penalized for being confident about clear, distinct synthetic boundaries.
+3. **GeM Dominance:** Concatenated pooling introduced too much noise. Generalized Mean (GeM) Pooling has historically proven to be the superior feature aggregator for this specific dataset.
 
 ---
 
-## Changes Applied
+## Changes to Apply (The Rollback)
 
-### 1. Hyperparameter Tuning (The "Anti-Overfit" Suite)
+We are reverting to a clean, lightly regularized pipeline optimized for crisp synthetic data.
 
-| Parameter | Old Value | New Value | Why This Helps |
-|-----------|----------|----------|---------------|
-| **dropout** | 0.3 | 0.5 | Forces classifier to use ALL neurons, not just a few |
-| **drop_path_rate** | 0.1 | 0.3 | Prevents deep layers from co-adapting |
-| **weight_decay** | 1e-4 | 1e-3 | Keeps weights small and general |
-| **mixup_alpha** | 0.4 | 0.8 | Harder samples → broader decision boundaries |
-| **label_smoothing** | 0.0 | 0.1 | Softens 0/1 targets → less overconfident |
-| **batch_size** | 128 | 64 | More gradient noise = implicit regularization |
-| **epochs** | 120 | 150 | Longer to converge with strong regularization |
+### 1. Hyperparameter Rollback
 
-### 2. Architectural Adjustments
+| Parameter | "Heavy" Value (Failed) | New Target (Rollback) | Rationale |
+|-----------|------------------------|-----------------------|-----------|
+| **epochs** | 150 | **100** | Faster convergence required since heavy augmentations are removed. |
+| **dropout** | 0.5 | **0.2** | Light regularization to preserve the clean geometric signal. |
+| **drop_path_rate** | 0.3 | **0.1** | Reverted to historically best setting from the 75.91% run. |
+| **weight_decay** | 1e-3 | **1e-4** | Standard L2 penalty. |
+| **mixup_alpha** | 0.8 | **0.0 (Disabled)** | Stop blending crisp geometric edges. |
+| **cutmix_prob** | 0.5 | **0.0 (Disabled)** | Stop destroying local features with black boxes. |
+| **label_smoothing**| 0.1 | **0.0 (Disabled)** | Allow the model to be 100% confident on synthetic data. |
 
-**Why Concatenated Pooling?**
-- GeM only captures mean intensity (average pooling)
-- Max pooling captures presence of features
-- Concatenating both captures MORE information:
-  - "Is this feature present?" (Max)
-  - "How much of the feature?" (Average)
-- Expands 512 → 1024 features = more signal to classifier
+### 2. Architectural Rollback
+- **Restore GeM Pooling**: Revert from `ConcatPool2d` back to `GeM(p=3.0)`.
+- **Restore Classifier**: Change the first linear layer input back from 1024 to **512** (to match the GeM output).
 
-**Why Expand Classifier?**
-- More input features (1024) need larger first layer
-- Previous 512→256 was bottleneck
+### 3. Data Pipeline Adjustments (Clean Renders)
+- ❌ Remove `RandomErasing`
+- ❌ Remove `GaussianBlur`
+- 🔽 Reduce `RandomResizedCrop` scale minimum from `0.7` to **`0.8`** (keep the object mostly intact within the frame).
+- 🔽 Reduce `ColorJitter` from `(0.4, 0.4, 0.4, 0.15)` to **`(0.2, 0.2, 0.2, 0.1)`** (lighter color variance).
 
-### 3. Training Logic
+### 4. Keep Existing
+- **TTA (Test Time Augmentation)**: Crucial for squeezing out an extra ~1% by averaging predictions.
+- **Optimizer & Scheduler**: AdamW + Cosine Annealing (Warmup: 5 epochs).
+- **CBAM**: Continue using Convolutional Block Attention to focus on key structural areas.
 
-**Why Keep Cosine Scheduler?**
-- OneCycleLR can be unstable with small batch sizes
-- Cosine is tested and stable
-- Still finds good minima
-
-### Keep Existing
-- **TTA**: Already working, adds ~1-2%
-- **CBAM**: Attention helps focus on relevant pixels
+---
 
 ## Expected Impact
+- **Training Speed**: Convergence will be much faster. Training accuracy should hit the mid-90s rapidly.
+- **Goal**: Reclaim the 75.91% baseline and push past 76.0% by combining the stable GeM pooling architecture with the optimized dynamic thresholding logic (calculating the optimal threshold on the validation set instead of assuming 0.5).
 
-**Why Validation Accuracy Will Drop:**
-- Stronger regularization = harder to achieve 99%
-- Expected: ~90-93% validation accuracy
-- This is actually GOOD - means less memorization
+## Dataset Understanding (CRITICAL)
 
-**Why Test Score Should Improve:**
-- Model forced to learn generalizable features
-- Can't memorize with dropout + weight decay
-- Expected: ~81-83% test score
+These are **CLEVR-style rendered scenes** — 4 small geometric objects (cubes, cylinders, spheres) on a plain gray background.
 
-## Implementation Status
-- ✅ dropout: 0.5 applied
-- ✅ drop_path_rate: 0.3 applied
-- ✅ weight_decay: 1e-3 applied
-- ✅ mixup_alpha: 0.8 applied
-- ✅ label_smoothing: 0.1 applied
-- ✅ batch_size: 64 applied
-- ✅ epochs: 150 applied
-- ✅ Concatenated Pooling applied
-- ✅ Classifier expanded to 1024 features
-- ⚠️ OneCycleLR - kept cosine scheduler (works better in practice)
+**Classification rule (confirmed by visual inspection):**
+- **Class 1**: scene contains at least one **sphere** AND at least one **cube**
+- **Class 0**: everything else (no sphere, or sphere with only cylinders but no cube)
+
+**Why prior experiments plateaued at ~76%:**
+1. `RandomResizedCrop` could cut the only sphere or cube out of frame → silent label corruption on every epoch
+2. Color was never a discriminative feature — same colours appear in both classes — but the model wasted capacity trying to use it
+3. `GaussianBlur` destroyed shape curvature (the only true signal)
+
+---
+
+## Current Approach — Edge-Map Preprocessing
+
+### `ShapePreprocess` pipeline (applied to every image, train and test)
+```
+RGB → Grayscale (L) → Contrast ×3 → FIND_EDGES → RGB (3 identical channels)
+```
+
+**Why this works:**
+- `FIND_EDGES` extracts shape outlines. A **sphere** produces a smooth **circular/elliptical contour**. A **cube** produces sharp **rectangular corners**. A **cylinder** produces rounded-top, flat-side outlines. The classification signal (sphere + cube present?) is now directly visible in the edge map — no shading, no colour, no background noise.
+- Normalisation changed from ImageNet stats to `EDGE_MEAN/STD = [0.5, 0.5, 0.5]` to match the near-binary edge image distribution.
+
+### Active augmentations (train only)
+| Transform | Kept? | Reason |
+|-----------|-------|--------|
+| `Resize(224)` | ✅ | All objects stay in frame |
+| `RandomHorizontalFlip` | ✅ | Edge outlines are flip-symmetric |
+| `ColorJitter` | ❌ | Irrelevant — input is grayscale edge map |
+| `RandomGrayscale` | ❌ | Already grayscale — redundant |
+| `RandomResizedCrop` | ❌ | Would remove key objects, corrupting labels |
+| `GaussianBlur` | ❌ | Smears edges — destroys the signal |
+
+### Hyperparameters (current)
+| Parameter | Value | Note |
+|-----------|-------|------|
+| `epochs` | 100 | With early stopping (patience=20) |
+| `dropout` | 0.2 | Light — edge maps are already regularised |
+| `drop_path_rate` | 0.1 | Proven best in prior runs |
+| `lr` | 7e-4 | AdamW + cosine warmup |
+| `tta` | True | HFlip TTA at val + test |
+| `ensemble_seeds` | (42,) | Single seed — faster turnaround |
+
+## Strategy for Final Day (deadline 17:00 IST)
+1. ✅ Edge-map preprocessing implemented in `submission.py`.
+2. Run `./run.sh data true` — trains 3 seeds (val + full retrain each), auto-submits.
+3. Expected finish: ~10:30 AM IST, leaving buffer for a retry if needed.

@@ -1,17 +1,23 @@
 {
   "seed": 42,
+  "ensemble_seeds": [
+    42
+  ],
+  "split_seed": 42,
   "img_size": 224,
   "batch_size": 128,
   "num_workers": 4,
-  "epochs": 200,
-  "lr": 0.0003,
+  "epochs": 100,
+  "lr": 0.0007,
   "weight_decay": 0.0001,
-  "dropout": 0.3,
-  "drop_path_rate": 0.0,
+  "dropout": 0.2,
+  "drop_path_rate": 0.1,
   "val_split": 0.15,
   "label_smoothing": 0.0,
+  "mixup_alpha": 0.0,
+  "cutmix_prob": 0.0,
   "grad_clip": 1.0,
-  "tta": false,
-  "patience": 15,
+  "tta": true,
+  "patience": 20,
   "warmup_epochs": 5
 }
