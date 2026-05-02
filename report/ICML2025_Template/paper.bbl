@@ -1,4 +1,4 @@
-\begin{thebibliography}{7}
+\begin{thebibliography}{6}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -16,6 +16,15 @@ Huang, G., Sun, Y., Liu, Z., Sedra, D., and Weinberger, K.
 \newblock Deep networks with stochastic depth.
 \newblock In \emph{Proceedings of the European Conference on Computer Vision
   (ECCV)}, pp.\  646--661, 2016.
+
+\bibitem[Johnson et~al.(2017)Johnson, Hariharan, van~der Maaten, Fei-Fei,
+  Zitnick, and Girshick]{johnson2017clevr}
+Johnson, J., Hariharan, B., van~der Maaten, L., Fei-Fei, L., Zitnick, C.~L.,
+  and Girshick, R.
+\newblock {CLEVR}: A diagnostic dataset for compositional language and
+  elementary visual reasoning.
+\newblock In \emph{Proceedings of the IEEE Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pp.\  2901--2910, 2017.
 
 \bibitem[Loshchilov \& Hutter(2019)Loshchilov and Hutter]{Loshchilov2019}
 Loshchilov, I. and Hutter, F.
@@ -35,17 +44,5 @@ Woo, S., Park, J., Lee, J.-Y., and Kweon, I.~S.
 \newblock {CBAM}: Convolutional block attention module.
 \newblock In \emph{Proceedings of the European Conference on Computer Vision
   (ECCV)}, pp.\  3--19, 2018.
-
-\bibitem[Yun et~al.(2019)Yun, Han, Oh, Chun, Choe, and Yoo]{Yun2019}
-Yun, S., Han, D., Oh, S.~J., Chun, S., Choe, J., and Yoo, Y.
-\newblock {CutMix}: Training strategy that makes use of sample pairing.
-\newblock In \emph{Proceedings of the IEEE/CVF International Conference on
-  Computer Vision (ICCV)}, pp.\  6023--6032, 2019.
-
-\bibitem[Zhang et~al.(2018)Zhang, Ciss\'{e}, Dauphin, and Lopez-Paz]{Zhang2018}
-Zhang, H., Ciss\'{e}, M., Dauphin, Y.~N., and Lopez-Paz, D.
-\newblock mixup: Beyond empirical risk minimization.
-\newblock In \emph{International Conference on Learning Representations
-  (ICLR)}, 2018.
 
 \end{thebibliography}

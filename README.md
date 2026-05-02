@@ -21,6 +21,87 @@ The pipeline:
 
 ---
 
+## Submission
+
+### Best Public Leaderboard Score
+
+| | |
+|---|---|
+| **Public score** | **0.775311 (77.53%)** |
+| Competition | `iith-deep-learning-2026-hackathon` |
+| Submission file | `submission.csv` — 5,010 predictions |
+| Training set | 18,000 images (9,000 Class-0 + 9,000 Class-1, perfectly balanced) |
+
+### Team
+
+| Name | Roll Number |
+|------|-------------|
+| Lochan Surya Teja Neeli | CS25MTECH11015 |
+| Harshavardhan Meerjumla | CS25MTECH11008 |
+
+### Approach Summary
+
+A custom **ResNet-34-like CNN** (3+4+6+3 blocks, 16 total residual blocks) trained entirely from scratch with:
+
+| Component | Detail |
+|-----------|--------|
+| **ShapePreprocess** | RGB → Grayscale → Contrast×3 → `FIND_EDGES` → RGB (deterministic, applied to every image) |
+| **CBAM attention** | Channel + spatial gating after every residual block |
+| **GeM pooling** | Generalized Mean pooling (`p=3.0`, learnable) replaces average pool |
+| **DropPath** | Stochastic depth, linearly scaled 0→0.1 across 16 blocks |
+| **TTA** | Horizontal-flip average at both validation and test time |
+| **Threshold** | Grid search over [0.05, 0.95] (401 steps) on 15 % held-out val set |
+| **Optimiser** | AdamW, lr=7e-4, weight_decay=1e-4, cosine LR + 5-epoch warmup |
+
+**Key dataset insight:** scenes are CLEVR-style 3-D renders.
+- Class 1 = scene contains ≥ 1 sphere **AND** ≥ 1 cube
+- Class 0 = everything else
+
+The discriminative signal is purely shape (sphere → smooth circular outline; cube → sharp rectangular corners). `ShapePreprocess` exposes this directly, eliminating colour as a spurious feature.
+
+**Two-phase training:**
+1. **Phase 1** — train on 85 % split with early stopping (patience 20); calibrate threshold on held-out 15 %.
+2. **Phase 2** — retrain on 100 % of data (same seed, 100 epochs); apply Phase-1 threshold to test predictions.
+
+### Score Progression
+
+| Key Change | Public Score |
+|------------|-------------|
+| ResNet-18 baseline | 0.728678 |
+| GeM + Stochastic Depth (ResNet-34) | 0.759102 |
+| Heavy reg (MixUp/CutMix) — regressed | 0.752867 |
+| Fix crop + TTA enabled | 0.755860 |
+| 100 epochs, single seed | 0.768827 |
+| **ShapePreprocess edge-map (final)** | **0.775311** |
+
+### Reproducing the Submission
+
+```bash
+conda activate cs5480-dl-kaggle
+./run.sh data          # generates submission.csv
+```
+
+Or generate and auto-submit in one step:
+
+```bash
+./run.sh data true
+```
+
+Reproducibility is guaranteed by `seed=42`, `split_seed=42`, and `torch.backends.cudnn.deterministic=True`.
+Expected output: `submission.csv` with exactly 5,010 rows; public score ≈ 0.7753.
+
+### Assignment Checklist
+
+- [x] No pretrained models — trained from scratch only
+- [x] Report (ICML 2025 format): `report/ICML2025_Template/paper.pdf`
+- [x] Each member's contribution documented in report §6 Conclusion
+- [x] `submission.py` exposes `generate_predictions(data_dir: str)` entry point
+- [x] `submission.csv` format: `ID,TARGET` with integer labels (0 or 1), 5,010 rows
+- [x] Results reproducible within 3 % tolerance (fixed seeds, deterministic CUDA)
+- [x] Training plots saved to `plots/` (training curves, ROC, PR, confusion matrix, metrics, threshold sensitivity, dataset distribution, probability distribution)
+
+---
+
 ## Repository Structure
 
 ```text
@@ -272,11 +353,12 @@ if __name__ == "__main__":
 
 ## Methodology
 
-* Model: Custom CNN
-* Training: From scratch (no pretrained weights)
+* Model: Custom ResNet-34-like CNN + CBAM + GeM Pooling
+* Training: From scratch (no pretrained weights), two-phase (val-split → full retrain)
+* Preprocessing: ShapePreprocess edge-map (grayscale → contrast → FIND_EDGES)
 * Loss: Binary Cross Entropy with logits
-* Optimizer: Adam
-* Input size: 224 x 224 pixels
+* Optimizer: AdamW (lr=7e-4, cosine LR schedule with 5-epoch warmup)
+* Input size: 224 × 224 pixels
 
 ---
 

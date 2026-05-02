@@ -5,8 +5,8 @@
 - ✓ Image size: 224 x 224 pixels (fixed)
 
 ## Current Status
-- **All-Time Best Score**: **76.88%** (Resnet-34 Ensemble + Train-100, 2026-05-01) ⭐ NEW BEST
-- **Previous Best**: 75.91% (GeM Pooling + Stochastic Depth, April 21)
+- **All-Time Best Score**: **77.53%** (ShapePreprocess Edge-Map + TTA, 2026-05-01) ⭐ NEW BEST
+- **Previous Best**: 76.88% (Resnet-34 Ensemble + Train-100, 2026-05-01)
 - **Target**: 80%
 - **Model**: Custom ResNet-34-like (3+4+6+3 blocks) + CBAM + GeM
 - **Next run**: Edge-map preprocessing (`ShapePreprocess`) — not yet submitted

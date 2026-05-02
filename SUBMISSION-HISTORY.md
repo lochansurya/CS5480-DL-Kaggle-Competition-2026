@@ -1,6 +1,8 @@
 | fileName              | date                          | description                                                | status   | publicScore | privateScore |
 |-----------------      |---------------------------    |---------------------------------------------------         |----------|-------------|--------------|
-| submission.csv        | 2026-05-01 10:57:39.010000    | Resnet-34(best) Ensemble; Train-100 ⭐ NEW BEST            | COMPLETE | **0.768827**|              |
+| submission.csv        | 2026-05-01 13:57:12.630000    | Resnet-34(best) 100; seed=42 ⭐ NEW BEST                   | COMPLETE | **0.775311**|              |
+| submission.csv        | 2026-05-01 12:55:49.403000    |                                                            | COMPLETE | 0.753117    |              |
+| submission.csv        | 2026-05-01 10:57:39.010000    | Resnet-34(best) Ensemble; Train-100                        | COMPLETE | 0.768827    |              |
 | submission.csv        | 2026-05-01 00:11:01.050000    | Resnet-34(best) Ensemble                                   | COMPLETE | 0.755860    |              |
 | submission.csv        | 2026-04-30 14:17:49.577000    | Final Full Train - Heavy Reg, Concat Pool, Thresh 0.475    | COMPLETE | 0.752867    |              |
 | submission.csv        | 2026-04-30 08:50:27.540000    | GreyScale 100 Epochs                                       | COMPLETE | 0.755361    |              |
