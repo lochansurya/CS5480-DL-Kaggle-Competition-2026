@@ -187,6 +187,25 @@ Normalisation is changed from ImageNet statistics to
 $\mu = \sigma = [0.5, 0.5, 0.5]$, appropriate for near-binary edge
 images.
 
+Figure~\ref{fig:shapepreprocess} illustrates the transform on one
+image from each class.  After preprocessing, the rounded contour of a
+sphere and the right-angle corners of a cube are unambiguously
+distinguishable, even to human inspection.
+
+\begin{figure}[t]
+\vskip 0.2in
+\begin{center}
+\includegraphics[width=0.48\textwidth]{figures/shapepreprocess_demo.png}
+\end{center}
+\vskip -0.1in
+\caption{ShapePreprocess in action.  \emph{Left}: original RGB images
+  (Class~0 top, Class~1 bottom).  \emph{Right}: corresponding edge
+  maps fed to the network.  Class~1 clearly shows a circular (sphere)
+  outline alongside rectangular (cube) corners; Class~0 shows only
+  angular outlines.}
+\label{fig:shapepreprocess}
+\end{figure}
+
 \subsection{Training Augmentation}
 
 Only shape-preserving augmentations are applied during training:
