@@ -116,11 +116,11 @@ EDGE_STD  = [0.5, 0.5, 0.5]
 class ShapePreprocess:
     """
     Converts a PIL RGB image into a grayscale edge map:
-        RGB → L → contrast boost → FIND_EDGES → RGB (3 identical channels)
+        RGB -> L -> contrast boost -> FIND_EDGES -> RGB (3 identical channels)
 
     Rationale for this dataset (CLEVR-style renders):
       - Colour is irrelevant: same colours appear in both classes.
-      - The discriminative signal is purely shape — sphere (rounded outline)
+      - The discriminative signal is purely shape -- sphere (rounded outline)
         vs cube/cylinder (angular outline).
       - FIND_EDGES extracts outlines whose curvature directly encodes shape,
         making it trivial for the model to learn the sphere/cube distinction.
@@ -192,7 +192,7 @@ def get_transforms(img_size: int, train: bool) -> T.Compose:
     preprocess = ShapePreprocess(contrast=3.0)
     if train:
         return T.Compose([
-            preprocess,                          # grayscale → contrast → edge map
+            preprocess,                          # grayscale -> contrast -> edge map
             T.Resize((img_size, img_size)),
             T.RandomHorizontalFlip(),
             T.ToTensor(),
@@ -764,7 +764,7 @@ def save_report_plots(
 
     plt.rcParams.update({"font.size": 11, "axes.titlesize": 13, "axes.titleweight": "bold"})
 
-    # ── 1. Training curves ──────────────────────────────────────────────────
+    # -- 1. Training curves --------------------------------------------------
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     fig.suptitle("Training Curves per Seed", fontsize=15, fontweight="bold", y=1.01)
 
@@ -803,7 +803,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved training_curves.png")
 
-    # ── 2. ROC Curve ────────────────────────────────────────────────────────
+    # -- 2. ROC Curve --------------------------------------------------------
     fpr, tpr, roc_thresholds = roc_curve(val_labels, val_probs)
     roc_auc = auc(fpr, tpr)
 
@@ -825,7 +825,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved roc_curve.png")
 
-    # ── 3. Confusion Matrix ──────────────────────────────────────────────────
+    # -- 3. Confusion Matrix -------------------------------------------------
     cm = confusion_matrix(val_labels, preds)
     total = cm.sum()
 
@@ -852,7 +852,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved confusion_matrix.png")
 
-    # ── 4. Classification Metrics Bar Chart ──────────────────────────────────
+    # -- 4. Classification Metrics Bar Chart ---------------------------------
     acc    = float((preds == val_labels).mean())
     prec   = float(precision_score(val_labels, preds))
     rec    = float(recall_score(val_labels, preds))
@@ -880,7 +880,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved classification_metrics.png")
 
-    # ── 5. Predicted Probability Distribution ───────────────────────────────
+    # -- 5. Predicted Probability Distribution --------------------------------
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(val_probs[val_labels == 0], bins=50, alpha=0.65,
             color="steelblue", label="True Class 0 (no sphere+cube)", edgecolor="white")
@@ -900,7 +900,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved probability_distribution.png")
 
-    # ── 6. Threshold Sensitivity ────────────────────────────────────────────
+    # -- 6. Threshold Sensitivity --------------------------------------------
     thresholds = np.linspace(0.01, 0.99, 500)
     accs = [((val_probs > t).astype(int) == val_labels).mean() for t in thresholds]
     best_idx = int(np.argmax(accs))
@@ -923,7 +923,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved threshold_sensitivity.png")
 
-    # ── 7. Dataset Distribution ──────────────────────────────────────────────
+    # -- 7. Dataset Distribution ---------------------------------------------
     n0 = len(list((train_dir / "0").glob("*")))
     n1 = len(list((train_dir / "1").glob("*")))
     total_imgs = n0 + n1
@@ -959,7 +959,7 @@ def save_report_plots(
     plt.close(fig)
     logger.info("Saved dataset_distribution.png")
 
-    # ── 8. Precision-Recall Curve ────────────────────────────────────────────
+    # -- 8. Precision-Recall Curve -------------------------------------------
     from sklearn.metrics import precision_recall_curve, average_precision_score
     precision_curve, recall_curve, _ = precision_recall_curve(val_labels, val_probs)
     avg_prec = average_precision_score(val_labels, val_probs)
