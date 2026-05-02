@@ -58,21 +58,21 @@
 \vskip 0.3in
 ]
 
-\printAffiliationsAndNotice{}
+%\printAffiliationsAndNotice{}
 
 \begin{abstract}
 We present a custom deep convolutional neural network for binary image
 classification built entirely from scratch in PyTorch, without any
 pretrained weights.  The architecture combines a ResNet-34-like backbone
 with Convolutional Block Attention Modules (CBAM) after every residual
-block and Generalized Mean (GeM) Pooling for richer global descriptors.
+block and Generalized Mean (GeM) Pooling for richer global descriptors. We show that explicitly injecting a shape-focused inductive bias via preprocessing significantly improves sample efficiency under the no-pretraining constraint.
 A key contribution is the \textbf{ShapePreprocess} pipeline: each input
 image is converted to a grayscale edge map
 (RGB $\to$ Grayscale $\to$ Contrast$\times$3 $\to$ \texttt{FIND\_EDGES}
 $\to$ RGB) before entering the network.  This deterministic transform
 directly exposes the discriminative shape signal --- smooth elliptical
 outlines for spheres versus sharp rectangular corners for cubes --- and
-eliminates colour as a spurious feature.  Combined with Test-Time
+reduces reliance on colour as a potentially spurious feature.  Combined with Test-Time
 Augmentation (horizontal flip), threshold calibration on the validation
 set, and light regularisation, the system achieves a public leaderboard
 score of \textbf{0.775311} (77.53\%) on the IITH Deep Learning
@@ -123,6 +123,15 @@ Two practical challenges followed from this analysis:
 Our solution --- the \texttt{ShapePreprocess} edge-map transform
 combined with a clean training pipeline --- addresses both issues and
 yields the current best score of 0.775311.
+A natural question is why such edge representations are not learned
+implicitly by the network itself. While convolutional networks can in
+principle extract edge detectors in early layers, doing so reliably
+requires sufficient data and training signal. Under the strict
+no-pretraining constraint and limited dataset size, we find that
+explicitly encoding this inductive bias at the input level improves
+learning stability and sample efficiency, allowing the network to focus
+on higher-level shape composition rather than rediscovering low-level
+features.
 
 %----------------------------------------------------------------------
 \section{Dataset}
@@ -179,9 +188,8 @@ object surfaces.  The edge-map transform amplifies the only true signal:
   \item A \textbf{cylinder} has a rounded top-cap and two vertical edges.
 \end{itemize}
 After the transform, the network receives near-binary outline images
-whose geometry directly encodes the class label.  Colour, shading, and
-background intensity are discarded entirely, preventing the model from
-learning spurious correlations.
+whose geometry directly encodes the class label.  Colour, shading, and background intensity are largely discarded,
+discouraging the model from learning spurious correlations.
 
 Normalisation is changed from ImageNet statistics to
 $\mu = \sigma = [0.5, 0.5, 0.5]$, appropriate for near-binary edge
@@ -635,7 +643,7 @@ at 0.5 would sacrifice several percentage points.
 We presented a binary image classification pipeline trained entirely
 from scratch using a ResNet-34-like backbone enhanced with CBAM
 dual-attention, Generalized Mean Pooling, and Stochastic Depth.  The
-key contribution is the \textbf{ShapePreprocess} edge-map transform
+key contribution is the ShapePreprocess edge-map transform
 that converts every input image into a grayscale shape outline map,
 directly encoding the sphere-vs-cube discrimination signal.  Combined
 with a clean training pipeline (no destructive augmentation, TTA,
@@ -645,15 +653,20 @@ of \textbf{0.775311} on the IITH Deep Learning Hackathon 2026 (CS5480).
 The most significant remaining challenge is the gap between strong
 validation accuracy and the leaderboard score, which reflects the
 difficulty of generalising to unseen scene configurations from a
-finite synthetic dataset without pretrained initialisation.
+finite synthetic dataset without pretrained initialisation. A limitation of the proposed approach is its reliance on clean,
+synthetic imagery where object boundaries are well-defined. In more
+complex real-world settings with noise, texture, or occlusion, explicit
+edge extraction may suppress useful information. Future work could
+explore hybrid approaches that retain colour and texture cues while
+still emphasising shape, or learn adaptive preprocessing modules within
+the network itself.
 
 \textbf{Member Contributions.}
 \emph{Lochan Surya}: architecture design (CBAM, GeM, DropPath), full
-training pipeline (AdamW, cosine LR, AMP, TTA), ShapePreprocess design
-and implementation, hyperparameter tuning, threshold optimisation,
+training pipeline (AdamW, cosine LR, AMP, TTA), ShapePreprocess implementation, hyperparameter tuning, threshold optimisation,
 report.
 \emph{Harsha}: dataset analysis and visual inspection (classification
-rule discovery), augmentation experiments (identifying crop and colour
+rule discovery), Shape Preprocess Design, augmentation experiments (identifying crop and colour
 bias issues), validation framework, report.
 
 %----------------------------------------------------------------------
