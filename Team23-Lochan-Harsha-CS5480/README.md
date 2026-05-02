@@ -56,7 +56,6 @@ This will:
 3. Write `submission.csv` (5,010 rows, `ID,TARGET` format)
 4. Save training plots to `plots/`
 
-Expected runtime: **~30 minutes** on a single GPU with AMP.
 
 ---
 

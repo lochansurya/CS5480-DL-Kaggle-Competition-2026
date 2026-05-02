@@ -666,8 +666,22 @@ the network itself.
 training pipeline (AdamW, cosine LR, AMP, TTA), ShapePreprocess implementation, hyperparameter tuning, threshold optimisation,
 report.
 \emph{Harsha}: dataset analysis and visual inspection (classification
-rule discovery), Shape Preprocess Design, augmentation experiments (identifying crop and colour
+rule discovery), ShapePreprocess design, augmentation experiments (identifying crop and colour
 bias issues), validation framework, report.
+
+\textbf{References and Resources.}
+The architecture design was guided by CS5480 course lecture slides:
+Lectures~8--9 (\emph{Training DNNs}) informed the choice of AdamW,
+cosine LR schedule with warm-up, gradient clipping, and mixed-precision
+training; Lectures~10--11 (\emph{Building Blocks of CNNs} and
+\emph{Evolution of CNN Architectures}) motivated the ResNet-34-like
+backbone; and Lecture~15 (\emph{Self-Attention and Transformers})
+provided background on attention mechanisms that underpins CBAM.
+Key external papers consulted are the original ResNet~\cite{He2016},
+CBAM~\cite{Woo2018}, GeM Pooling~\cite{Radenovic2018}, Stochastic
+Depth~\cite{Huang2016}, AdamW~\cite{Loshchilov2019}, and
+CLEVR~\cite{johnson2017clevr}.
+
 
 %----------------------------------------------------------------------
 \section*{Acknowledgements}
