@@ -464,6 +464,23 @@ Random seed          & 42 (single seed) \\
 \vskip -0.1in
 \end{table}
 
+\subsection{Computational Cost}
+
+The final model contains \textbf{21.58 million trainable parameters}
+distributed as follows: the ResNet-34-like backbone (stem + four
+residual stages) accounts for $\approx$21.3M parameters, CBAM modules
+add $\approx$0.24M (channel and spatial attention across 16 blocks),
+and the two-layer classifier head contributes the remaining $\approx$0.04M.
+
+Training runs in two sequential phases on a single NVIDIA GPU with
+mixed-precision (AMP) enabled.  \textbf{Phase~1} (85\% split,
+early-stopping patience~20, batch~128, image size $224\!\times\!224$)
+completes in approximately \textbf{10--15 minutes}.  \textbf{Phase~2}
+(full 18k images, 100 epochs fixed) takes approximately
+\textbf{15--20 minutes}.  The complete pipeline for a single seed thus
+runs in roughly \textbf{30 minutes end-to-end}.  The final submission
+uses a single seed (seed~42), so no ensemble overhead is incurred.
+
 %----------------------------------------------------------------------
 \section{Experiments and Results}
 \label{sec:results}
@@ -640,20 +657,13 @@ rule discovery), augmentation experiments (identifying crop and colour
 bias issues), validation framework, report.
 
 %----------------------------------------------------------------------
-\section*{Impact Statement}
-%----------------------------------------------------------------------
-
-This paper presents work whose goal is to advance the field of Machine
-Learning.  There are many potential societal consequences of our work,
-none of which we feel must be specifically highlighted here.
-
-%----------------------------------------------------------------------
 \section*{Acknowledgements}
 %----------------------------------------------------------------------
 
 We thank Prof.\ Srijith P.K.\ and Prof.\ Konda Reddy Mopuri for
 designing and organising the CS5480 Deep Learning Hackathon at IIT
-Hyderabad, 2026.
+Hyderabad, 2026, and the teaching assistants for their support
+throughout the course.
 
 %----------------------------------------------------------------------
 \bibliography{paper}
