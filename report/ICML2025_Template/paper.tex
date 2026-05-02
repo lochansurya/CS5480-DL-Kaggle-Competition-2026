@@ -484,8 +484,8 @@ tracking training accuracy after the warm-up phase.  Early stopping
 \end{center}
 \vskip -0.1in
 \caption{Training curves: (top-left) BCE loss, (top-right) training
-  accuracy, (bottom-left) validation accuracy with the previous best
-  baseline marked, (bottom-right) learning rate schedule.}
+  accuracy, (bottom-left) validation accuracy with the prior single-model
+  best (75.91\%) marked as reference, (bottom-right) learning rate schedule.}
 \label{fig:train-curves}
 \end{figure}
 
@@ -550,7 +550,12 @@ on the validation set after threshold optimisation.
 
 Table~\ref{tab:ablation} traces the progression of public leaderboard
 scores across our major submissions, together with the key change in
-each iteration.
+each iteration.  The prior best of 0.768827 (76.88\%) was obtained
+with a \textbf{3-seed ensemble} of the GeM + Stochastic Depth model
+trained for 100 epochs; the final submission of 0.775311 surpasses it
+with a \textbf{single seed} (seed~42) by adopting the ShapePreprocess
+edge-map transform, demonstrating that better input representation
+outweighs ensemble diversity on this dataset.
 
 \begin{table}[t]
 \caption{Public leaderboard score progression across major submissions.}
@@ -567,7 +572,7 @@ GeM + Stochastic Depth        & Better pooling + reg.        & 0.759102 \\
 Heavy Reg (MixUp, CutMix)     & Over-regularised             & 0.752867 \\
 Rollback + TTA enabled        & Light aug, hflip TTA         & 0.755860 \\
 Remove RandomResizedCrop      & Fix label corruption         & 0.755860 \\
-+ 100 epochs, single seed     & Increased budget             & 0.768827 \\
++ 100 epochs, 3-seed ensemble & Increased budget + ensemble  & 0.768827 \\
 \textbf{ShapePreprocess (edge map)} & \textbf{Edge-map input}  & \textbf{0.775311} \\
 \bottomrule
 \end{tabular}
